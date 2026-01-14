@@ -1,5 +1,5 @@
-import { clamp, ri } from "./utils.js?v=33";
-import { t } from "./i18n.js?v=33";
+import { clamp, ri } from "./utils.js?v=35";
+import { t } from "./i18n.js?v=35";
 
 function pct(n) {
   return `${Math.round(n * 100)}%`;

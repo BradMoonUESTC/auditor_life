@@ -1,5 +1,5 @@
-import { clamp, ri } from "./utils.js?v=33";
-import { adjustAfterAction, healthCap, log, spendAP } from "./state.js?v=33";
+import { clamp, ri } from "./utils.js?v=35";
+import { adjustAfterAction, healthCap, log, spendAP } from "./state.js?v=35";
 
 /**
  * @typedef {{id:string,title:string,desc:(s:any)=>string,when:(s:any)=>boolean,choices:(s:any)=>{label:string,primary?:boolean,apply:(stt:any)=>void}[]}} GameEvent

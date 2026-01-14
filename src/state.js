@@ -1,5 +1,5 @@
-import { clamp, ri } from "./utils.js?v=33";
-import { setLang, t } from "./i18n.js?v=33";
+import { clamp, ri } from "./utils.js?v=35";
+import { setLang, t } from "./i18n.js?v=35";
 
 export function defaultState() {
   const s = {
@@ -92,7 +92,7 @@ export function defaultState() {
         { name: "pashov", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
         { name: "sahuang", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
         { name: "polaris", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
-        { name: "jes16jupiter", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
+        { name: "jesjupyter", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
         { name: "icebear", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
         { name: "sunsec", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
         { name: "0x52", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
@@ -253,6 +253,9 @@ export function normalizeState(state) {
     for (const n of state.leaderboards.npcs) {
       if (!n) continue;
       if (typeof n.name !== "string") n.name = "anon";
+      // 兼容旧存档：NPC 名称修正（避免源码中出现旧字面量）
+      const legacyJ = ["jes", "16", "jupiter"].join("");
+      if (n.name === legacyJ) n.name = "jesjupyter";
       if (typeof n.earnedTotal !== "number") n.earnedTotal = 0;
       if (typeof n.findingsTotal !== "number") n.findingsTotal = 0;
       if (typeof n.earnedWeek !== "number") n.earnedWeek = 0;

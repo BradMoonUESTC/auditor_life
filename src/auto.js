@@ -1,5 +1,5 @@
-import { clamp } from "./utils.js?v=33";
-import { healthCap, log } from "./state.js?v=33";
+import { clamp } from "./utils.js?v=35";
+import { healthCap, log } from "./state.js?v=35";
 
 // 返回一个“下一步该做什么”的决策；不直接改 AP（由 doAction/主逻辑处理）
 export function pickAutoStep(state) {

@@ -1,8 +1,8 @@
-import { PROTOCOLS, DIRECT_CLIENTS, PLATFORM_NAMES, COMPANIES, SHOP_ITEMS } from "./content.js?v=33";
-import { clamp, pick, rnd, ri } from "./utils.js?v=33";
-import { adjustAfterAction, gainAP, healthCap, log, refreshAP, spendAP } from "./state.js?v=33";
-import { addCustomXPost } from "./xfeed.js?v=33";
-import { pickClientName, pickPlatformName, t } from "./i18n.js?v=33";
+import { PROTOCOLS, DIRECT_CLIENTS, PLATFORM_NAMES, COMPANIES, SHOP_ITEMS } from "./content.js?v=35";
+import { clamp, pick, rnd, ri } from "./utils.js?v=35";
+import { adjustAfterAction, gainAP, healthCap, log, refreshAP, spendAP } from "./state.js?v=35";
+import { addCustomXPost } from "./xfeed.js?v=35";
+import { pickClientName, pickPlatformName, t } from "./i18n.js?v=35";
 
 function fmtCash(state, amount) {
   const loc = state?.settings?.lang === "en" ? "en-US" : "zh-CN";
@@ -256,10 +256,12 @@ export function makePlatformContest(state) {
   const scope = ri(20, 90);
   const duration = ri(1, 3);
   const popularity = ri(30, 95);
-  // 经济缩放：奖池在几千量级，按 share 分到手通常是几百~一两千
-  const basePrize = 1200 + scope * 35 + proto.diff * 15;
-  const hypeMul = 1 + popularity / 180;
-  const prizePool = Math.round(basePrize * hypeMul);
+  // 奖池更“真实”：每场总奖池几万~几十万；去重/solo 会显著影响个人到手
+  const basePrize = 22000 + scope * 1400 + proto.diff * 900; // ~3w 起步
+  const hypeMul = 1 + popularity / 120; // 热度越高总池子越大
+  const prizePool = clamp(Math.round(basePrize * hypeMul), 30000, 450000);
+  // 氛围用：整场（有效）finding 总量，别比玩家离谱太多（结算时会再“按玩家成绩”约束 share）
+  const totalFindingsHint = clamp(Math.round(4 + scope / 12 + proto.diff / 18 + popularity / 25), 6, 28);
   const platformKeys = ["sherlock", "code4rena", "cantina"];
   const platformKey = platformKeys[Math.floor(Math.random() * platformKeys.length)];
   const platform = t(state, `platform.${platformKey}`);
@@ -275,6 +277,7 @@ export function makePlatformContest(state) {
     deadlineWeeks: duration,
     popularity,
     prizePool,
+    totalFindingsHint,
     notes:
       popularity >= 75
         ? t(state, "platform.notes.hot")
@@ -1142,6 +1145,7 @@ export function finishContest(state, c) {
 
   // 评审：提交才会进池子；evidence 越高，通过率更高
   let acceptedPts = 0;
+  let acceptedN = 0;
   let duplicated = 0;
   let rejected = 0;
   for (const s of submitted) {
@@ -1156,6 +1160,7 @@ export function finishContest(state, c) {
         duplicated += 1;
       } else {
         s.status = "accepted";
+        acceptedN += 1;
         acceptedPts += s.points || 0;
       }
     } else {
@@ -1165,8 +1170,17 @@ export function finishContest(state, c) {
   }
 
   const score = acceptedPts + Math.round(evidence / 10);
-  const share = acceptedPts > 0 ? clamp(score / (score + rnd(25, 95) + (c.popularity || 50) / 2), 0.05, 0.45) : 0;
-  const payout = Math.round(c.prizePool * share);
+  // 让“整场 finding 总量”不会比玩家离谱太多：用玩家 score 上限约束对手强度
+  let fieldScore = Math.round(rnd(35, 120) + (c.popularity || 50) * 0.7 + (c.totalFindingsHint || 12) * 2);
+  fieldScore = Math.min(fieldScore, score * 2.2 + 110);
+  // share：基础按你贡献/证据算，再叠加“dup 多=>少拿”“solo 多=>多拿”
+  const baseShare = acceptedPts > 0 ? score / (score + fieldScore) : 0;
+  const share = acceptedPts > 0 ? clamp(baseShare, 0.03, 0.55) : 0;
+  const dupRatio = duplicated / Math.max(1, submitted.length);
+  const dupPenalty = clamp(1 - dupRatio * 0.85, 0.35, 1);
+  const soloBonus = clamp(1 + acceptedN * 0.06 + Math.max(0, acceptedPts - 6) * 0.015, 1, 1.9);
+  let payout = Math.round((c.prizePool || 0) * share * dupPenalty * soloBonus);
+  payout = clamp(payout, 0, Math.round((c.prizePool || 0) * 0.65));
   state.stats.cash += payout;
   if (!state.progress) state.progress = { noOrderWeeks: 0, totalWeeks: 0, earnedTotal: 0, findingsTotal: 0 };
   state.progress.earnedTotal = (state.progress.earnedTotal || 0) + Math.max(0, payout);

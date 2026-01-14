@@ -1,6 +1,6 @@
-import { pick, ri } from "./utils.js?v=33";
-import { weekLabel } from "./state.js?v=33";
-import { getXMemes } from "./i18n.js?v=33";
+import { pick, ri } from "./utils.js?v=35";
+import { weekLabel } from "./state.js?v=35";
+import { getXMemes } from "./i18n.js?v=35";
 
 const AUTHORS = [
   { handle: "@ser_auditor", name: "Ser Auditor" },
