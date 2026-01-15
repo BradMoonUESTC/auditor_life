@@ -1,8 +1,8 @@
-import { PROTOCOLS, DIRECT_CLIENTS, PLATFORM_NAMES, COMPANIES, SHOP_ITEMS } from "./content.js?v=35";
-import { clamp, pick, rnd, ri } from "./utils.js?v=35";
-import { adjustAfterAction, gainAP, healthCap, log, refreshAP, spendAP } from "./state.js?v=35";
-import { addCustomXPost } from "./xfeed.js?v=35";
-import { pickClientName, pickPlatformName, t } from "./i18n.js?v=35";
+import { PROTOCOLS, DIRECT_CLIENTS, PLATFORM_NAMES, COMPANIES, SHOP_ITEMS } from "./content.js?v=37";
+import { clamp, pick, rnd, ri } from "./utils.js?v=37";
+import { adjustAfterAction, gainAP, healthCap, log, refreshAP, spendAP } from "./state.js?v=37";
+import { addCustomXPost } from "./xfeed.js?v=37";
+import { pickClientName, pickPlatformName, t } from "./i18n.js?v=37";
 
 function fmtCash(state, amount) {
   const loc = state?.settings?.lang === "en" ? "en-US" : "zh-CN";
@@ -549,7 +549,7 @@ export function tickMajorIncident(state) {
   if (state.majorIncident?.active) {
     state.majorIncident.weeksLeft -= 1;
     if (state.majorIncident.weeksLeft < 0) {
-      log(state, `重大事件窗口已过期：《${state.majorIncident.title}》。你错过了抢时效的红利。`, "warn");
+      log(state, t(state, "log.major.expired", { title: state.majorIncident.title }), "warn");
       state.majorIncident = null;
       state.world.majorIncidentCooldown = ri(8, 18);
     }
@@ -560,22 +560,23 @@ export function tickMajorIncident(state) {
     const p = 0.08;
     if (Math.random() < p) {
       const kinds = [
-        { k: "bridge_hack", title: "跨链桥疑似被打：资金异常外流" },
-        { k: "oracle_fail", title: "预言机异常：多协议连环清算" },
-        { k: "governance_attack", title: "治理攻击：提案被疑似劫持" },
-        { k: "key_leak", title: "私钥疑云：权限地址发生异常操作" },
+        { k: "bridge_hack" },
+        { k: "oracle_fail" },
+        { k: "governance_attack" },
+        { k: "key_leak" },
       ];
       const pickOne = pick(kinds);
+      const title = t(state, `major.title.${pickOne.k}`);
       state.majorIncident = {
         active: true,
         kind: pickOne.k,
-        title: pickOne.title,
+        title,
         spawnedAt: { ...state.now },
         weeksLeft: ri(1, 2),
         progress: { analysis: 0, tracing: 0, writeup: 0, xThread: 0 },
         published: { done: false, weekOffset: null },
       };
-      log(state, `【重大事件】${pickOne.title}（窗口 ${state.majorIncident.weeksLeft} 周）。`, "warn");
+      log(state, t(state, "log.major.spawned", { title, weeks: state.majorIncident.weeksLeft }), "warn");
     }
   }
 }
@@ -1011,10 +1012,10 @@ export function doAction(state, actionKey, toast) {
       state.research.published.aiAudit = (state.research.published.aiAudit || 0) + 1;
       addCustomXPost(state, {
         author: `${state.player.name} @you`,
-        text: "我做了个 AI 审计小实验：能抓到一些常见模式，但离“替代人类审计”还差得远。重点是：怎么把它接进流程。",
+        text: t(state, "xpost.aiResearch.publish"),
       });
       state.stats.reputation = clamp((state.stats.reputation || 0) + 2, 0, 100);
-      log(state, `你发布了 AI 审计研究小结：外部反响不错（声望+2，名声+2）。`, "good");
+      log(state, t(state, "log.aiResearch.publish"), "good");
     }
   }
 
@@ -1027,13 +1028,13 @@ export function doAction(state, actionKey, toast) {
       state.employment.trust = clamp((state.employment.trust || 50) + 1, 0, 100);
     }
     adjustAfterAction(state, { stamina: -2, mood: -1 });
-    log(state, `你把 AI 审计研究做成了“流程里的小工具”（内部采用度+${inc}%）。`, "good");
+    log(state, t(state, "log.aiResearch.productized", { inc }), "good");
   }
 
   if (actionKey === "incidentAnalysis" || actionKey === "fundTrace" || actionKey === "writeBrief" || actionKey === "postX") {
     const mi = state.majorIncident;
     if (!mi || !mi.active) {
-      toast?.("当前没有重大安全事件。");
+      toast?.(t(state, "msg.major.none"));
       gainAP(state, cost);
       return;
     }
@@ -1041,17 +1042,17 @@ export function doAction(state, actionKey, toast) {
     if (actionKey === "incidentAnalysis") {
       p.analysis = clamp(p.analysis + ri(18, 30), 0, 100);
       adjustAfterAction(state, { stamina: -1, mood: -1 });
-      log(state, `你在做事件分析：还原攻击路径（分析 ${p.analysis}%）。`, "info");
+      log(state, t(state, "log.major.action.analysis", { pct: p.analysis }), "info");
     }
     if (actionKey === "fundTrace") {
       p.tracing = clamp(p.tracing + ri(15, 28), 0, 100);
       adjustAfterAction(state, { stamina: -1, mood: -1 });
-      log(state, `你在追踪资金：地址标注与流向整理（追踪 ${p.tracing}%）。`, "info");
+      log(state, t(state, "log.major.action.tracing", { pct: p.tracing }), "info");
     }
     if (actionKey === "writeBrief") {
       p.writeup = clamp(p.writeup + ri(16, 30) + Math.round(st.writing / 25), 0, 100);
       adjustAfterAction(state, { stamina: -1, mood: -1 });
-      log(state, `你在写简报：把影响面与时间线写清楚（简报 ${p.writeup}%）。`, "info");
+      log(state, t(state, "log.major.action.writeup", { pct: p.writeup }), "info");
     }
     if (actionKey === "postX") {
       const quality = p.analysis + p.writeup + Math.round(p.tracing / 2);
@@ -1063,8 +1064,8 @@ export function doAction(state, actionKey, toast) {
           state.employment.trust = clamp((state.employment.trust || 50) - 3, 0, 100);
           state.employment.performance = clamp((state.employment.performance || 50) - 2, 0, 100);
         }
-        addCustomXPost(state, { author: `${state.player.name} @you`, text: `（翻车）我太早发了对《${mi.title}》的判断，后续信息打脸。以后先写完再发。` });
-        log(state, `你太早发 thread：被打脸（声望-2，名声-1）。`, "bad");
+        addCustomXPost(state, { author: `${state.player.name} @you`, text: t(state, "xpost.major.early", { title: mi.title }) });
+        log(state, t(state, "log.major.postX.early"), "bad");
         // 一旦发出就算“结算”：避免刷帖反复薅/反复扣
         state.majorIncident = null;
         state.world.majorIncidentCooldown = ri(6, 14);
@@ -1078,8 +1079,8 @@ export function doAction(state, actionKey, toast) {
           state.employment.performance = clamp((state.employment.performance || 50) + ri(1, 3), 0, 100);
           state.employment.trust = clamp((state.employment.trust || 50) + ri(0, 2), 0, 100);
         }
-        addCustomXPost(state, { author: `${state.player.name} @you`, text: `《${mi.title}》简报：时间线/影响面/缓解建议（窗口剩余 ${mi.weeksLeft} 周）。` });
-        log(state, `你发布了重大事件 thread：外部反响不错（声望+${repGain}，名声+${brandGain}）。`, "good");
+        addCustomXPost(state, { author: `${state.player.name} @you`, text: t(state, "xpost.major.good", { title: mi.title, weeks: mi.weeksLeft }) });
+        log(state, t(state, "log.major.postX.good", { repGain, brandGain }), "good");
         state.majorIncident = null;
         state.world.majorIncidentCooldown = ri(8, 18);
       }

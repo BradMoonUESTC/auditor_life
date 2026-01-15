@@ -1,5 +1,5 @@
-import { clamp, ri } from "./utils.js?v=35";
-import { setLang, t } from "./i18n.js?v=35";
+import { clamp, ri } from "./utils.js?v=37";
+import { setLang, t } from "./i18n.js?v=37";
 
 export function defaultState() {
   const s = {
@@ -269,6 +269,11 @@ export function normalizeState(state) {
 
   // 关键：加载旧存档后也要按当前语言重贴标签（直客/平台/offer/company），否则会残留旧中文
   setLang(state, state.settings.lang);
+
+  // 兼容旧存档：重大事件标题以前可能写死中文；这里按当前语言重新贴标题
+  if (state.majorIncident?.active && typeof state.majorIncident.kind === "string") {
+    state.majorIncident.title = t(state, `major.title.${state.majorIncident.kind}`);
+  }
 
   return state;
 }
