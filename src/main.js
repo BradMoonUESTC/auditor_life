@@ -1,7 +1,7 @@
 // cache-bust: 避免浏览器强缓存旧模块导致“按钮没反应/文案不更新”
-import { clamp, escapeHtml } from "./utils.js?v=37";
-import { load, resetStorage, save } from "./storage.js?v=37";
-import { adjustAfterAction, defaultState, healthCap, log, normalizeState, refreshAP, weekLabel } from "./state.js?v=37";
+import { clamp, escapeHtml } from "./utils.js?v=38";
+import { load, resetStorage, save } from "./storage.js?v=38";
+import { adjustAfterAction, defaultState, healthCap, log, normalizeState, refreshAP, weekLabel } from "./state.js?v=38";
 import {
   acceptJob,
   actionCost,
@@ -19,14 +19,14 @@ import {
   settleProjects,
   tickLeaderboards,
   useItem,
-} from "./logic.js?v=37";
-import { rollEvents } from "./events.js?v=37";
-import { closeModal, openModal, toast } from "./modal.js?v=37";
-import { bind, render, switchTab } from "./ui.js?v=37";
-import { addXPosts } from "./xfeed.js?v=37";
-import { setLang, t } from "./i18n.js?v=37";
-import { pickAutoStep } from "./auto.js?v=37";
-import { applyNegotiationMove, negotiationBody, negotiationMoves, startDirectNegotiation } from "./negotiation.js?v=37";
+} from "./logic.js?v=38";
+import { rollEvents } from "./events.js?v=38";
+import { closeModal, openModal, toast } from "./modal.js?v=38";
+import { bind, render, switchTab } from "./ui.js?v=38";
+import { addXPosts } from "./xfeed.js?v=38";
+import { setLang, t } from "./i18n.js?v=38";
+import { pickAutoStep } from "./auto.js?v=38";
+import { applyNegotiationMove, negotiationBody, negotiationMoves, startDirectNegotiation } from "./negotiation.js?v=38";
 
 function isFreshStart(state) {
   return (

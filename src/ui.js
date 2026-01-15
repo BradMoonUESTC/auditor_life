@@ -1,10 +1,10 @@
-import { $, $$ } from "./dom.js?v=37";
-import { clamp, escapeHtml, money } from "./utils.js?v=37";
-import { save } from "./storage.js?v=37";
-import { healthCap, normalizeState, refreshAP, weekLabel } from "./state.js?v=37";
-import { actionCost, ensureSelection, findTarget, itemCount, protocolLabel } from "./logic.js?v=37";
-import { SHOP_ITEMS } from "./content.js?v=37";
-import { applyI18nDom, t as tr } from "./i18n.js?v=37";
+import { $, $$ } from "./dom.js?v=38";
+import { clamp, escapeHtml, money } from "./utils.js?v=38";
+import { save } from "./storage.js?v=38";
+import { healthCap, normalizeState, refreshAP, weekLabel } from "./state.js?v=38";
+import { actionCost, ensureSelection, findTarget, itemCount, protocolLabel } from "./logic.js?v=38";
+import { SHOP_ITEMS } from "./content.js?v=38";
+import { applyI18nDom, t as tr } from "./i18n.js?v=38";
 
 export function switchTab(tabKey) {
   for (const btn of $$(".tab")) {

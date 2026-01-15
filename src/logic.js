@@ -1,8 +1,8 @@
-import { PROTOCOLS, DIRECT_CLIENTS, PLATFORM_NAMES, COMPANIES, SHOP_ITEMS } from "./content.js?v=37";
-import { clamp, pick, rnd, ri } from "./utils.js?v=37";
-import { adjustAfterAction, gainAP, healthCap, log, refreshAP, spendAP } from "./state.js?v=37";
-import { addCustomXPost } from "./xfeed.js?v=37";
-import { pickClientName, pickPlatformName, t } from "./i18n.js?v=37";
+import { PROTOCOLS, DIRECT_CLIENTS, PLATFORM_NAMES, COMPANIES, SHOP_ITEMS } from "./content.js?v=38";
+import { clamp, pick, rnd, ri } from "./utils.js?v=38";
+import { adjustAfterAction, gainAP, healthCap, log, refreshAP, spendAP } from "./state.js?v=38";
+import { addCustomXPost } from "./xfeed.js?v=38";
+import { pickClientName, pickPlatformName, t } from "./i18n.js?v=38";
 
 function fmtCash(state, amount) {
   const loc = state?.settings?.lang === "en" ? "en-US" : "zh-CN";

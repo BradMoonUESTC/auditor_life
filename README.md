@@ -17,6 +17,25 @@ python3 -m http.server 5173
 
 然后在浏览器打开：`http://localhost:5173`
 
+## 关于 `?v=xx`（浏览器缓存）与一键同步
+因为使用 ES Modules + `python3 -m http.server` 时，浏览器可能会**缓存模块文件**，改了代码但页面还在跑旧逻辑。
+
+本仓库用 `?v=xx` 做 cache bust。为了避免每次手动改一堆文件，你只需要改一个地方：
+
+- **方案 A（推荐）**：运行脚本自动批量更新
+
+```bash
+python3 tools/bump_version.py --inc
+```
+
+它会把 `tools/version.txt` 里的版本号自增 1，并把全仓库所有 `?v=` 同步成同一个值。
+
+- **方案 B**：手动指定版本号
+
+```bash
+python3 tools/bump_version.py 38
+```
+
 ## 文件说明
 - `index.html`: 页面结构
 - `styles.css`: UI 样式（偏“模拟器”卡片风）

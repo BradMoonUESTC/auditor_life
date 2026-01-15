@@ -1,4 +1,4 @@
-import { clamp } from "./utils.js?v=37";
+import { clamp } from "./utils.js?v=38";
 
 // 轻量 i18n：不引入外部依赖（纯前端、可离线），所有英文集中在语言包里
 const DICT = {

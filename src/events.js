@@ -1,6 +1,6 @@
-import { clamp, ri } from "./utils.js?v=37";
-import { adjustAfterAction, healthCap, log, spendAP } from "./state.js?v=37";
-import { t } from "./i18n.js?v=37";
+import { clamp, ri } from "./utils.js?v=38";
+import { adjustAfterAction, healthCap, log, spendAP } from "./state.js?v=38";
+import { t } from "./i18n.js?v=38";
 
 /**
  * @typedef {{id:string,title:string,desc:(s:any)=>string,when:(s:any)=>boolean,choices:(s:any)=>{label:string,primary?:boolean,apply:(stt:any)=>void}[]}} GameEvent
