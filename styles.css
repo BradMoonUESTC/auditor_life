@@ -15,6 +15,12 @@
   --chip:#0c132a;
   --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+
+  /* layout cols (resizable) */
+  --col-left: 420px;
+  --col-right: 360px;
+  --col-lb: 300px;
+  --split: 8px;
 }
 
 *{ box-sizing:border-box; }
@@ -82,7 +88,7 @@ select.select{
 select.select:hover{ background-color: rgba(255,255,255,.06); }
 .layout{
   display:grid;
-  grid-template-columns: 420px 1fr 360px 300px; /* 左-中-右-榜 */
+  grid-template-columns: var(--col-left) var(--split) 1fr var(--split) var(--col-right) var(--split) var(--col-lb); /* 左-分隔-中-分隔-右-分隔-榜 */
   gap:12px;
   padding:12px;
   max-width: none;        /* 去掉左右大空白 */
@@ -94,17 +100,38 @@ select.select:hover{ background-color: rgba(255,255,255,.06); }
 }
 
 @media (min-width: 1500px){
-  .layout{ grid-template-columns: 460px 1fr 380px 320px; padding:14px 16px; }
+  .layout{
+    /* 屏幕更宽时，默认更宽一点（仍可拖拽覆盖） */
+    --col-left: 460px;
+    --col-right: 380px;
+    --col-lb: 320px;
+    padding:14px 16px;
+  }
 }
 
 @media (max-width: 980px){
   .layout{ grid-template-columns: 1fr; }
+  .vsplit{ display:none; }
 }
 
 .panel{ display:flex; flex-direction:column; gap:12px; min-height:0; overflow:hidden; }
 .content{ display:flex; flex-direction:column; gap:12px; min-height:0; overflow:hidden; }
 .rightbar{ display:flex; flex-direction:column; gap:12px; min-height:0; overflow:hidden; }
 .lbbar{ display:flex; flex-direction:column; gap:12px; min-height:0; overflow:hidden; }
+
+.vsplit{
+  align-self:stretch;
+  width: var(--split);
+  border-radius: 999px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.08);
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+  box-shadow: 0 10px 30px rgba(0,0,0,.25);
+}
+.vsplit:hover{ background: rgba(255,255,255,.08); border-color: rgba(124,92,255,.55); }
+.vsplit.is-dragging{ background: rgba(124,92,255,.22); border-color: rgba(124,92,255,.65); }
 
 .card{
   background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
@@ -204,16 +231,100 @@ select.select:hover{ background-color: rgba(255,255,255,.06); }
 #alwaysLog{ flex: 1 1 auto; min-height:0; overflow:hidden; }
 #alwaysLog .feed{ height:100%; overflow:auto; padding-right:6px; }
 
+/* 右侧三卡：自动化/事件列表/新闻动态 等高分配 */
+#rightBar > .card{ flex: 1 1 0; min-height:0; overflow:hidden; display:flex; flex-direction:column; }
+
+/* 自动化卡：内容可能较多，卡内滚动 */
+#rightBar .autoBody{ flex: 1 1 auto; min-height:0; overflow:auto; padding-right:6px; }
+
+/* 自动化模式：字号更小，腾空间 */
+#rightBar .autoBody{
+  font-size: 12px;
+  line-height: 1.25;
+}
+#rightBar .autoBody .select,
+#rightBar .autoBody .input{
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+#rightBar .autoBody .input--sm{
+  width: 70px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+/* 事件列表：卡内列表滚动 */
+#eventInboxCard #inboxList{ flex: 1 1 auto; min-height:0; overflow:auto; padding-right:6px; }
+
+/* 事件列表/新闻动态：顶部提示文案更小，给内容腾空间 */
+#eventInboxCard > .muted,
+#alwaysLog > .muted{
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+/* 自动化控件：并排排版，减少“翻页” */
+.autoGrid{
+  display:grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap:8px 10px;
+}
+.autoItem{
+  display:flex;
+  gap:8px;
+  align-items:center;
+  min-width:0;
+  flex-wrap:wrap;
+}
+.autoItem > span{ white-space:nowrap; }
+.autoItem--full{ grid-column: 1 / -1; }
+.autoRow{
+  display:flex;
+  gap:8px;
+  align-items:center;
+  min-width:0;
+}
+.autoRow .select{ flex: 1 1 auto; min-width: 0; }
+
+.autoPair{
+  display:flex;
+  gap:10px;
+  align-items:center;
+  justify-content:space-between;
+  flex-wrap:nowrap; /* 强制同一行 */
+}
+.autoPair .autoItem{
+  flex: 1 1 0;
+  min-width: 0; /* 允许内容收缩 */
+  flex-wrap:nowrap;
+  justify-content:space-between;
+}
+.autoPair .autoItem > span{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+/* 阈值输入框：更短，确保两项能并排 */
+.autoPair .input--sm{
+  width: 56px;
+}
+
 /* 隐藏滚动条（仍可滚动），避免出现“可拖拽的 bar” */
 .panel,
 [data-tab-panel],
-#alwaysLog .feed{
+#alwaysLog .feed,
+#eventInboxCard #inboxList,
+#rightBar .autoBody{
   scrollbar-width: none;        /* Firefox */
   -ms-overflow-style: none;     /* IE/Edge legacy */
 }
 .panel::-webkit-scrollbar,
 [data-tab-panel]::-webkit-scrollbar,
-#alwaysLog .feed::-webkit-scrollbar{
+#alwaysLog .feed::-webkit-scrollbar,
+#eventInboxCard #inboxList::-webkit-scrollbar,
+#rightBar .autoBody::-webkit-scrollbar{
   width: 0;
   height: 0;
 }
@@ -223,6 +334,9 @@ select.select:hover{ background-color: rgba(255,255,255,.06); }
   display:grid;
   grid-template-columns: 1.1fr .9fr;
   gap:14px;
+}
+.split--stack{
+  grid-template-columns: 1fr;
 }
 @media (max-width: 980px){
   .split{ grid-template-columns: 1fr; }

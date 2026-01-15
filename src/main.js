@@ -1,7 +1,7 @@
 // cache-bust: 避免浏览器强缓存旧模块导致“按钮没反应/文案不更新”
-import { clamp, escapeHtml } from "./utils.js?v=38";
-import { load, resetStorage, save } from "./storage.js?v=38";
-import { adjustAfterAction, defaultState, healthCap, log, normalizeState, refreshAP, weekLabel } from "./state.js?v=38";
+import { clamp, escapeHtml } from "./utils.js?v=54";
+import { load, resetStorage, save } from "./storage.js?v=54";
+import { adjustAfterAction, defaultState, healthCap, log, normalizeState, refreshAP, weekLabel } from "./state.js?v=54";
 import {
   acceptJob,
   actionCost,
@@ -19,14 +19,15 @@ import {
   settleProjects,
   tickLeaderboards,
   useItem,
-} from "./logic.js?v=38";
-import { rollEvents } from "./events.js?v=38";
-import { closeModal, openModal, toast } from "./modal.js?v=38";
-import { bind, render, switchTab } from "./ui.js?v=38";
-import { addXPosts } from "./xfeed.js?v=38";
-import { setLang, t } from "./i18n.js?v=38";
-import { pickAutoStep } from "./auto.js?v=38";
-import { applyNegotiationMove, negotiationBody, negotiationMoves, startDirectNegotiation } from "./negotiation.js?v=38";
+} from "./logic.js?v=54";
+import { rollEvents, inboxDefs, seedEventInbox } from "./events.js?v=54";
+import { closeModal, openModal, toast } from "./modal.js?v=54";
+import { bind, initResizableLayout, render, switchTab } from "./ui.js?v=54";
+import { addXPosts } from "./xfeed.js?v=54";
+import { setLang, t } from "./i18n.js?v=54";
+import { pickAutoStep } from "./auto.js?v=54";
+import { applyNegotiationMove, negotiationBody, negotiationMoves, startDirectNegotiation } from "./negotiation.js?v=54";
+import { FEEDBACK_FORM_EMBED_URL } from "./content.js?v=54";
 
 function isFreshStart(state) {
   return (
@@ -168,6 +169,12 @@ function advanceWeek(state) {
   const cap = healthCap(state);
   const livingCost = 700;
 
+  // X 舆情热度：每周自然衰减（避免永久被舆情锁死）
+  if (!state.world) state.world = { majorIncidentCooldown: 0, eventPityWeeks: 0, xHeat: 0, xLastOutcome: null, xLastPostTotalWeek: null };
+  const heat = clamp(Math.round(state.world.xHeat ?? 0), 0, 100);
+  const decay = heat >= 70 ? 22 : heat >= 40 ? 16 : 10;
+  state.world.xHeat = clamp(heat - decay, 0, 100);
+
   state.now.week += 1;
   if (state.now.week > 52) {
     state.now.week = 1;
@@ -179,6 +186,8 @@ function advanceWeek(state) {
   seedMarket(state, true);
   // 氛围向：每周刷几条 X 梗
   addXPosts(state);
+  // 每周刷一批“可选事件列表”
+  seedEventInbox(state);
   // 职业/公司/重大事件推进（工资、tickets、job offers、重大事件 tick）
   careerAdvanceWeek(state);
 
@@ -317,6 +326,7 @@ function main() {
   // 启动时补齐市场与公司任务（避免旧存档出现“职业页空空如也”）
   seedMarket(state, false);
   ensureCompanyTickets(state);
+  seedEventInbox(state);
   refreshAP(state);
 
   let autoTimer = null;
@@ -499,6 +509,76 @@ function main() {
         return;
       }
     },
+    onInbox: (raw) => {
+      if (!raw) return;
+      const [op, id] = raw.split(":");
+      if (!op || !id) return;
+      const item = (state.inbox?.items || []).find((x) => x.id === id);
+      if (!item) return;
+      const defs = inboxDefs();
+      const def = defs.find((d) => d.id === item.def);
+      if (!def) {
+        // def 不存在：直接移除
+        state.inbox.items = state.inbox.items.filter((x) => x.id !== id);
+        render(state);
+        return;
+      }
+
+      const remove = () => {
+        state.inbox.items = (state.inbox.items || []).filter((x) => x.id !== id);
+      };
+
+      const open = () => {
+        const choices = Array.isArray(def.choices) ? def.choices : [];
+        openModal({
+          title: t(state, def.titleKey),
+          body: `<div>${escapeHtml(t(state, def.descKey))}</div>`,
+          actions: [
+            ...choices.map((c) => ({
+              label: t(state, c.labelKey),
+              kind: c.primary ? "primary" : undefined,
+              onClick: () => {
+                closeModal();
+                try {
+                  c.apply?.(state, item.payload || {});
+                } catch (e) {
+                  log(state, state.settings.lang === "en" ? "Inbox choice failed to apply." : "事件选项处理失败（已忽略）。", "warn");
+                }
+                remove();
+                render(state);
+              },
+            })),
+            {
+              label: t(state, "ui.inbox.ignore"),
+              onClick: () => {
+                closeModal();
+                remove();
+                log(state, t(state, "inbox.log.ignored"), "info");
+                render(state);
+              },
+            },
+          ],
+        });
+      };
+
+      if (op === "ignore") {
+        remove();
+        log(state, t(state, "inbox.log.ignored"), "info");
+        render(state);
+        return;
+      }
+      if (op === "open") {
+        open();
+        return;
+      }
+    },
+    onClearInbox: () => {
+      if (!state.inbox) state.inbox = { items: [] };
+      state.inbox.items = [];
+      log(state, t(state, "inbox.log.cleared"), "info");
+      save(state);
+      render(state);
+    },
     onEndWeek: () => {
       // 自动化开启时：避免“确认弹窗”被自动化抢焦点，直接结束本周
       if (state.settings?.auto?.enabled) {
@@ -571,6 +651,31 @@ function main() {
         ],
       });
     },
+    onFeedback: () => {
+      const src = String(FEEDBACK_FORM_EMBED_URL || "").trim();
+      if (!src) {
+        openModal({
+          title: t(state, "modal.feedback.title"),
+          body: `<div class="muted">${escapeHtml(t(state, "modal.feedback.body"))}</div>`,
+          actions: [{ label: t(state, "modal.toast.ok"), kind: "primary", onClick: closeModal }],
+        });
+        return;
+      }
+      openModal({
+        title: t(state, "modal.feedback.title"),
+        body: `
+          <div class="muted" style="margin-bottom:10px;">${escapeHtml(t(state, "modal.feedback.body"))}</div>
+          <iframe
+            src="${escapeHtml(src)}"
+            style="width:100%;height:min(70vh,640px);border:0;border-radius:12px;background:#0b1020;"
+            frameborder="0"
+            marginheight="0"
+            marginwidth="0"
+          >${escapeHtml(t(state, "modal.feedback.loading"))}</iframe>
+        `,
+        actions: [{ label: t(state, "modal.common.confirm"), kind: "primary", onClick: closeModal }],
+      });
+    },
     onCloseModal: closeModal,
     onLangChange: (lang) => {
       setLang(state, lang);
@@ -610,6 +715,9 @@ function main() {
       render(state);
     },
   });
+
+  // 初始化可拖拽分隔条（布局可调宽度）
+  initResizableLayout();
 
   render(state);
   switchTab("workbench");

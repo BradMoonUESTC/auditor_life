@@ -1,10 +1,10 @@
-import { $, $$ } from "./dom.js?v=38";
-import { clamp, escapeHtml, money } from "./utils.js?v=38";
-import { save } from "./storage.js?v=38";
-import { healthCap, normalizeState, refreshAP, weekLabel } from "./state.js?v=38";
-import { actionCost, ensureSelection, findTarget, itemCount, protocolLabel } from "./logic.js?v=38";
-import { SHOP_ITEMS } from "./content.js?v=38";
-import { applyI18nDom, t as tr } from "./i18n.js?v=38";
+import { $, $$ } from "./dom.js?v=54";
+import { clamp, escapeHtml, money } from "./utils.js?v=54";
+import { save } from "./storage.js?v=54";
+import { healthCap, normalizeState, refreshAP, weekLabel } from "./state.js?v=54";
+import { actionCost, ensureSelection, findTarget, itemCount, protocolLabel } from "./logic.js?v=54";
+import { SHOP_ITEMS } from "./content.js?v=54";
+import { applyI18nDom, t as tr } from "./i18n.js?v=54";
 
 export function switchTab(tabKey) {
   for (const btn of $$(".tab")) {
@@ -16,6 +16,167 @@ export function switchTab(tabKey) {
     const active = panel.dataset.tabPanel === tabKey;
     panel.classList.toggle("is-hidden", !active);
   }
+}
+
+// ===== resizable layout (drag splitters) =====
+const LAYOUT_STORAGE_KEY = "auditor_layout_cols_v1";
+
+function parsePx(v, fallback) {
+  if (typeof v !== "string") return fallback;
+  const n = parseFloat(v.replace("px", "").trim());
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function clampRange(n, min, max) {
+  if (!Number.isFinite(n)) return min;
+  return Math.max(min, Math.min(max, n));
+}
+
+function loadLayoutCols() {
+  try {
+    const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== "object") return null;
+    return obj;
+  } catch {
+    return null;
+  }
+}
+
+function saveLayoutCols(cols) {
+  try {
+    localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(cols));
+  } catch {
+    // ignore
+  }
+}
+
+export function initResizableLayout() {
+  const layout = document.getElementById("layoutRoot") || document.querySelector(".layout");
+  if (!layout) return;
+  if (layout.dataset.resizeInit === "1") return;
+  layout.dataset.resizeInit = "1";
+
+  const cs = getComputedStyle(layout);
+  const splitW = parsePx(cs.getPropertyValue("--split"), 8);
+
+  // Restore saved widths (if any)
+  const saved = loadLayoutCols();
+  if (saved) {
+    if (typeof saved.left === "number") layout.style.setProperty("--col-left", `${Math.round(saved.left)}px`);
+    if (typeof saved.right === "number") layout.style.setProperty("--col-right", `${Math.round(saved.right)}px`);
+    if (typeof saved.lb === "number") layout.style.setProperty("--col-lb", `${Math.round(saved.lb)}px`);
+  }
+
+  /** recompute clamps based on current window */
+  const getNums = () => {
+    const c = getComputedStyle(layout);
+    const left = parsePx(c.getPropertyValue("--col-left"), 420);
+    const right = parsePx(c.getPropertyValue("--col-right"), 360);
+    const lb = parsePx(c.getPropertyValue("--col-lb"), 300);
+    const split = parsePx(c.getPropertyValue("--split"), splitW);
+    return { left, right, lb, split };
+  };
+
+  const minLeft = 320;
+  const minRight = 280;
+  const minLb = 240;
+  const minContent = 520;
+
+  /** @type {null | {kind:'left'|'right'|'lb', startX:number}} */
+  let dragging = null;
+
+  const applyAndPersist = () => {
+    const { left, right, lb } = getNums();
+    saveLayoutCols({ left, right, lb });
+  };
+
+  const onMove = (ev) => {
+    if (!dragging) return;
+    const r = layout.getBoundingClientRect();
+    const x = ev.clientX;
+    const { left, right, lb, split } = getNums();
+
+    // Available max for left/right/lb while keeping content >= minContent
+    const total = r.width;
+    const maxLeft = total - minContent - right - lb - split * 3;
+    const maxRight = total - minContent - left - lb - split * 3;
+    const maxLb = total - minContent - left - right - split * 3;
+
+    if (dragging.kind === "left") {
+      const newLeft = clampRange(x - r.left, minLeft, Math.max(minLeft, maxLeft));
+      layout.style.setProperty("--col-left", `${Math.round(newLeft)}px`);
+      return;
+    }
+    if (dragging.kind === "right") {
+      // rightbar width = right edge - splitterX - split*2 - lb
+      const newRightRaw = r.right - x - split * 2 - lb;
+      const newRight = clampRange(newRightRaw, minRight, Math.max(minRight, maxRight));
+      layout.style.setProperty("--col-right", `${Math.round(newRight)}px`);
+      return;
+    }
+    if (dragging.kind === "lb") {
+      // lb width = right edge - splitterX - split
+      const newLbRaw = r.right - x - split;
+      const newLb = clampRange(newLbRaw, minLb, Math.max(minLb, maxLb));
+      layout.style.setProperty("--col-lb", `${Math.round(newLb)}px`);
+    }
+  };
+
+  const stop = () => {
+    if (!dragging) return;
+    dragging = null;
+    document.body.style.cursor = "";
+    for (const el of document.querySelectorAll(".vsplit.is-dragging")) el.classList.remove("is-dragging");
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", stop);
+    applyAndPersist();
+  };
+
+  const start = (kind, ev) => {
+    // mobile layout: do nothing
+    if (window.matchMedia("(max-width: 980px)").matches) return;
+    dragging = { kind, startX: ev.clientX };
+    document.body.style.cursor = "col-resize";
+    ev.currentTarget?.classList?.add("is-dragging");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", stop);
+  };
+
+  for (const el of document.querySelectorAll(".vsplit[data-split]")) {
+    const kind = el.getAttribute("data-split");
+    if (kind !== "left" && kind !== "right" && kind !== "lb") continue;
+    el.addEventListener("pointerdown", (ev) => {
+      // @ts-ignore
+      if (ev.button != null && ev.button !== 0) return;
+      el.setPointerCapture?.(ev.pointerId);
+      start(kind, ev);
+    });
+    el.addEventListener("dblclick", () => {
+      // reset to css defaults
+      layout.style.removeProperty("--col-left");
+      layout.style.removeProperty("--col-right");
+      layout.style.removeProperty("--col-lb");
+      saveLayoutCols({}); // clear
+    });
+  }
+
+  // keep values sane on resize
+  window.addEventListener("resize", () => {
+    const r = layout.getBoundingClientRect();
+    const { left, right, lb, split } = getNums();
+    const total = r.width;
+    const maxLeft = Math.max(minLeft, total - minContent - right - lb - split * 3);
+    const maxRight = Math.max(minRight, total - minContent - left - lb - split * 3);
+    const maxLb = Math.max(minLb, total - minContent - left - right - split * 3);
+    const cl = clampRange(left, minLeft, maxLeft);
+    const cr = clampRange(right, minRight, maxRight);
+    const cb = clampRange(lb, minLb, maxLb);
+    layout.style.setProperty("--col-left", `${Math.round(cl)}px`);
+    layout.style.setProperty("--col-right", `${Math.round(cr)}px`);
+    layout.style.setProperty("--col-lb", `${Math.round(cb)}px`);
+  });
 }
 
 function statBar(n) {
@@ -74,11 +235,48 @@ export function render(state) {
   renderMarket(state);
   renderCareer(state);
   renderShop(state);
+  renderInbox(state);
   renderLog(state);
   renderLeaderboards(state);
   renderXFeed(state);
 
   save(state);
+}
+
+function renderInbox(state) {
+  const wrap = document.getElementById("inboxList");
+  if (!wrap) return;
+  const items = state.inbox?.items || [];
+  if (!items.length) {
+    wrap.innerHTML = `<div class="muted" style="padding:8px 0;" data-i18n="ui.inbox.empty">${escapeHtml(
+      tr(state, "ui.inbox.empty")
+    )}</div>`;
+    return;
+  }
+  wrap.innerHTML = items
+    .slice(0, 20)
+    .map((it) => {
+      const title = tr(state, `inbox.${it.def}.title`);
+      const chip = tr(state, `ui.inbox.kind.${String(it.def).startsWith("sec_") ? "security" : String(it.def).startsWith("market_") ? "market" : String(it.def).startsWith("social_") ? "social" : "meme"}`);
+      return `
+      <div class="item" style="display:flex;gap:10px;align-items:flex-start;justify-content:space-between;">
+        <div style="min-width:0;">
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span class="chip">${escapeHtml(chip)}</span>
+            <div class="item__title" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(title)}</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;flex:0 0 auto;">
+          <button class="btn btn--ghost" style="padding:6px 10px;font-size:12px;" data-inbox="open:${it.id}">${escapeHtml(
+            tr(state, "ui.inbox.open")
+          )}</button>
+          <button class="btn btn--ghost" style="padding:6px 10px;font-size:12px;" data-inbox="ignore:${it.id}">${escapeHtml(
+            tr(state, "ui.inbox.ignore")
+          )}</button>
+        </div>
+      </div>`;
+    })
+    .join("");
 }
 
 function renderStats(state) {
@@ -144,6 +342,7 @@ function renderActions(state) {
     { key: "writeBrief", label: tr(state, "action.writeBrief.label"), hint: tr(state, "action.writeBrief.hint") },
     { key: "postX", label: tr(state, "action.postX.label"), hint: tr(state, "action.postX.hint") },
     { key: "blog", label: tr(state, "action.blog.label"), hint: tr(state, "action.blog.hint") },
+    { key: "tweet", label: tr(state, "action.tweet.label"), hint: tr(state, "action.tweet.hint") },
     { key: "learn", label: tr(state, "action.learn.label"), hint: tr(state, "action.learn.hint") },
     { key: "rest", label: tr(state, "action.rest.label"), hint: tr(state, "action.rest.hint") },
     { key: "compliance", label: tr(state, "action.compliance.label"), hint: tr(state, "action.compliance.hint") },
@@ -643,12 +842,15 @@ function renderXFeed(state) {
  *  onSave:()=>void,
  *  onNewGame:()=>void,
  *  onResetGame:()=>void,
+ *  onFeedback?:()=>void,
  *  onCloseModal:()=>void,
  *  onHoursChange:(h:number)=>void,
  *  onLangChange?:(lang:string)=>void
  *  onAutoChange?:(next:any)=>void
  *  onCareer?:(raw:string)=>void
  *  onShop?:(raw:string)=>void
+ *  onInbox?:(raw:string)=>void
+ *  onClearInbox?:()=>void
  * }} handlers
  */
 export function bind(state, handlers) {
@@ -693,7 +895,9 @@ export function bind(state, handlers) {
       if (key === "saveGame") handlers.onSave();
       if (key === "newGame") handlers.onNewGame();
       if (key === "resetGame") handlers.onResetGame();
+      if (key === "feedback") handlers.onFeedback?.();
       if (key === "clearLog") handlers.onClearLog?.();
+      if (key === "clearInbox") handlers.onClearInbox?.();
       if (key === "langEn") handlers.onLangChange?.("en");
       if (key === "langZh") handlers.onLangChange?.("zh");
       return;
@@ -710,6 +914,13 @@ export function bind(state, handlers) {
     if (shopBtn) {
       const raw = shopBtn.getAttribute("data-shop");
       handlers.onShop?.(raw);
+      return;
+    }
+
+    const inboxBtn = el.closest?.("[data-inbox]");
+    if (inboxBtn) {
+      const raw = inboxBtn.getAttribute("data-inbox");
+      handlers.onInbox?.(raw);
       return;
     }
   });

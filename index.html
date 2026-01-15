@@ -7,7 +7,7 @@
     <meta name="description" content="Web3 Auditor 模拟器：按周推进的数值+文案驱动小游戏（纯前端，无依赖）。" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%237c5cff'/%3E%3Ctext x='32' y='42' font-size='34' text-anchor='middle'%3E%F0%9F%95%B5%EF%B8%8F%3C/text%3E%3C/svg%3E" />
     <!-- cache-bust: 防止某些环境下样式被强缓存导致改动不生效 -->
-    <link rel="stylesheet" href="./styles.css?v=38" />
+    <link rel="stylesheet" href="./styles.css?v=54" />
   </head>
   <body>
     <header class="topbar">
@@ -25,10 +25,11 @@
         <button class="btn btn--ghost" data-ui="newGame" data-i18n="ui.top.new">新档</button>
         <button class="btn btn--ghost" data-ui="saveGame" data-i18n="ui.top.save">保存</button>
         <button class="btn btn--ghost" data-ui="resetGame" data-i18n="ui.top.reset">重置</button>
+        <button class="btn btn--ghost" data-ui="feedback" data-i18n="ui.top.feedback">反馈</button>
       </div>
     </header>
 
-    <main class="layout">
+    <main class="layout" id="layoutRoot">
       <aside class="panel" id="leftPanel">
         <section class="card">
           <div class="card__title" data-i18n="ui.card.player">审计师名片</div>
@@ -72,6 +73,8 @@
           </div>
         </section>
       </aside>
+
+      <div class="vsplit" data-split="left" role="separator" aria-orientation="vertical" tabindex="0" title="拖拽调整左侧栏宽度"></div>
 
       <section class="content">
         <nav class="tabs" role="tablist" aria-label="Main navigation" data-i18n-aria-label="ui.tabs.aria">
@@ -169,56 +172,68 @@
 
       </section>
 
-      <!-- 右侧常驻栏：自动化 + 新闻动态 -->
+      <div class="vsplit" data-split="right" role="separator" aria-orientation="vertical" tabindex="0" title="拖拽调整右侧栏宽度"></div>
+
+      <!-- 右侧常驻栏：自动化 + 事件列表 + 新闻动态 -->
       <aside class="rightbar" id="rightBar">
         <section class="card">
           <div class="card__title" data-i18n="ui.auto.title">自动化模式</div>
-          <div class="ap__hint muted">
-            <label style="display:flex;gap:8px;align-items:center;">
+          <div class="autoBody">
+          <div class="autoGrid muted">
+            <label class="autoItem autoItem--full">
               <input type="checkbox" id="autoEnabled" />
               <span data-i18n="ui.auto.enabled">启用自动化（每 2 秒一步）</span>
             </label>
-          </div>
-          <div class="ap__hint muted" style="margin-top:6px;">
-            <span data-i18n="ui.auto.focus">偏好：</span>
-            <select id="autoFocus" class="select">
-              <option value="balanced" data-i18n="ui.auto.focus.balanced">均衡</option>
-              <option value="survival" data-i18n="ui.auto.focus.survival">生存优先（先休息）</option>
-              <option value="direct" data-i18n="ui.auto.focus.direct">直客优先</option>
-              <option value="platform" data-i18n="ui.auto.focus.platform">平台优先</option>
-              <option value="company" data-i18n="ui.auto.focus.company">公司任务优先</option>
-              <option value="incident" data-i18n="ui.auto.focus.incident">重大事件优先</option>
-              <option value="research" data-i18n="ui.auto.focus.research">研究优先</option>
-            </select>
-          </div>
-          <div class="ap__hint muted" style="margin-top:6px;">
-            <label style="display:flex;gap:8px;align-items:center;">
+
+            <div class="autoItem autoItem--full">
+              <div class="autoRow">
+                <span data-i18n="ui.auto.focus">偏好：</span>
+                <select id="autoFocus" class="select">
+                  <option value="balanced" data-i18n="ui.auto.focus.balanced">均衡</option>
+                  <option value="survival" data-i18n="ui.auto.focus.survival">生存优先（先休息）</option>
+                  <option value="direct" data-i18n="ui.auto.focus.direct">直客优先</option>
+                  <option value="platform" data-i18n="ui.auto.focus.platform">平台优先</option>
+                  <option value="company" data-i18n="ui.auto.focus.company">公司任务优先</option>
+                  <option value="incident" data-i18n="ui.auto.focus.incident">重大事件优先</option>
+                  <option value="research" data-i18n="ui.auto.focus.research">研究优先</option>
+                </select>
+              </div>
+            </div>
+
+            <label class="autoItem">
               <input type="checkbox" id="autoEndWeek" />
               <span data-i18n="ui.auto.autoEndWeek">行动点用完后自动结束本周</span>
             </label>
-          </div>
-          <div class="ap__hint muted" style="margin-top:6px;">
-            <label style="display:flex;gap:8px;align-items:center;">
+            <label class="autoItem">
               <input type="checkbox" id="autoAllowAcceptJob" />
               <span data-i18n="ui.auto.allowAcceptJob">允许自动入职</span>
             </label>
-          </div>
-          <div class="ap__hint muted" style="margin-top:6px;">
-            <label style="display:flex;gap:8px;align-items:center;">
+            <label class="autoItem">
               <input type="checkbox" id="autoAllowQuitJob" />
               <span data-i18n="ui.auto.allowQuitJob">允许自动离职</span>
             </label>
+
+            <div class="autoItem autoItem--full autoPair">
+              <label class="autoItem">
+                <span data-i18n="ui.auto.minStaminaPct">最低精力阈值(%)</span>
+                <input id="autoMinSta" class="input input--sm" type="number" min="5" max="90" step="1" />
+              </label>
+              <label class="autoItem">
+                <span data-i18n="ui.auto.minMoodPct">最低心态阈值(%)</span>
+                <input id="autoMinMood" class="input input--sm" type="number" min="5" max="90" step="1" />
+              </label>
+            </div>
           </div>
-          <div class="ap__hint muted" style="margin-top:6px; display:flex; gap:8px;">
-            <label style="display:flex;gap:6px;align-items:center;">
-              <span data-i18n="ui.auto.minStaminaPct">最低精力阈值(%)</span>
-              <input id="autoMinSta" class="input input--sm" type="number" min="5" max="90" step="1" />
-            </label>
-            <label style="display:flex;gap:6px;align-items:center;">
-              <span data-i18n="ui.auto.minMoodPct">最低心态阈值(%)</span>
-              <input id="autoMinMood" class="input input--sm" type="number" min="5" max="90" step="1" />
-            </label>
           </div>
+        </section>
+
+        <section class="card" id="eventInboxCard">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+            <div class="card__title" data-i18n="ui.inbox.title">事件列表</div>
+            <button class="btn btn--ghost" style="padding:6px 10px;font-size:12px;" data-ui="clearInbox" data-i18n="ui.inbox.clear">清空</button>
+          </div>
+          <div class="muted" data-i18n="ui.inbox.hint">每周会刷新一批“可选事件”（梗/小插曲/行业动态）。点开看看，处理或忽略都行。</div>
+          <div class="list" id="inboxList"></div>
         </section>
 
         <section class="card" id="alwaysLog">
@@ -231,6 +246,8 @@
           <div class="feed" id="log"></div>
         </section>
       </aside>
+
+      <div class="vsplit" data-split="lb" role="separator" aria-orientation="vertical" tabindex="0" title="拖拽调整排行榜宽度"></div>
 
       <!-- 最右侧单独一栏：排行榜（避免挡住新闻动态） -->
       <aside class="lbbar" id="lbBar">
@@ -259,7 +276,7 @@
     </div>
 
     <!-- cache-bust: 防止浏览器缓存旧的 JS 模块导致功能更新不生效 -->
-    <script type="module" src="./src/main.js?v=38"></script>
+    <script type="module" src="./src/main.js?v=54"></script>
   </body>
 </html>
 

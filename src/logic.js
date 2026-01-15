@@ -1,8 +1,8 @@
-import { PROTOCOLS, DIRECT_CLIENTS, PLATFORM_NAMES, COMPANIES, SHOP_ITEMS } from "./content.js?v=38";
-import { clamp, pick, rnd, ri } from "./utils.js?v=38";
-import { adjustAfterAction, gainAP, healthCap, log, refreshAP, spendAP } from "./state.js?v=38";
-import { addCustomXPost } from "./xfeed.js?v=38";
-import { pickClientName, pickPlatformName, t } from "./i18n.js?v=38";
+import { PROTOCOLS, DIRECT_CLIENTS, PLATFORM_NAMES, COMPANIES, SHOP_ITEMS } from "./content.js?v=54";
+import { clamp, pick, rnd, ri } from "./utils.js?v=54";
+import { adjustAfterAction, gainAP, healthCap, log, refreshAP, spendAP } from "./state.js?v=54";
+import { addCustomXPost } from "./xfeed.js?v=54";
+import { pickClientName, pickPlatformName, t } from "./i18n.js?v=54";
 
 function fmtCash(state, amount) {
   const loc = state?.settings?.lang === "en" ? "en-US" : "zh-CN";
@@ -153,6 +153,7 @@ export function actionCost(state, actionKey, target) {
     if (actionKey === "fundTrace") return 1;
     if (actionKey === "writeBrief") return 1;
     if (actionKey === "postX") return 1;
+    if (actionKey === "tweet") return 1;
     let base = 1;
     if (actionKey === "model") base = 3;
     if (actionKey === "audit") base = 2;
@@ -182,6 +183,7 @@ export function actionCost(state, actionKey, target) {
   if (actionKey === "fundTrace") base = 1;
   if (actionKey === "writeBrief") base = 1;
   if (actionKey === "postX") base = 1;
+  if (actionKey === "tweet") base = 1;
 
   // Shop modifiers
   if (has("tooling_suite") && ["audit", "model", "write", "retest", "submit"].includes(actionKey)) base -= 1;
@@ -909,10 +911,226 @@ export function doAction(state, actionKey, toast) {
   }
 
   if (actionKey === "blog") {
-    const rep = ri(1, 3) + (st.writing > 55 ? 1 : 0);
-    const net = ri(0, 2) + (st.comms > 55 ? 1 : 0);
-    adjustAfterAction(state, { reputation: rep, network: net, mood: +1, stamina: -1 });
-    log(state, t(state, "log.action.blog", { rep, net }));
+    // 吹逼 / 发输出：有收益也有翻车风险；会影响 X 舆情热度（后续事件触发）
+    if (!state.world) state.world = { majorIncidentCooldown: 0, eventPityWeeks: 0, xHeat: 0, xLastOutcome: null, xLastPostTotalWeek: null };
+    const heat = clamp(Math.round(state.world.xHeat ?? 0), 0, 100);
+    const skill = (st.writing + st.comms) / 200; // 0~1
+    const brand = (st.brand ?? 0) / 120;
+    const repS = (st.reputation ?? 0) / 120;
+    const scrutiny = heat / 220; // 热度越高越容易被盯
+    const okP = clamp(0.45 + skill * 0.55 + brand * 0.35 + repS * 0.25 - scrutiny, 0.12, 0.92);
+    const ok = Math.random() < okP;
+    const viralP = clamp(0.06 + (st.brand ?? 0) / 260 + (st.reputation ?? 0) / 320 - heat / 600, 0.03, 0.22);
+    const viral = ok && Math.random() < viralP;
+
+    state.world.xLastPostTotalWeek = clamp(Math.round(state.progress?.totalWeeks ?? 0), 0, 999999);
+
+    if (viral) {
+      const repGain = ri(3, 6);
+      const brandGain = ri(3, 6);
+      const netGain = ri(1, 4);
+      const tip = ri(800, 12000);
+      adjustAfterAction(state, { reputation: repGain, brand: brandGain, network: netGain, cash: tip, mood: +2, stamina: -1 });
+      if (!state.progress) state.progress = { noOrderWeeks: 0, totalWeeks: 0, earnedTotal: 0, findingsTotal: 0 };
+      state.progress.earnedTotal = (state.progress.earnedTotal || 0) + Math.max(0, tip);
+      state.world.xHeat = clamp(heat + ri(30, 55), 0, 100);
+      state.world.xLastOutcome = "viral";
+
+      const tpl = t(state, "x.brag.viral.templates");
+      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
+      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(2600, 28000), rts: ri(600, 8200) });
+      log(state, t(state, "log.action.blog.viral", { rep: repGain, brand: brandGain, net: netGain, tip }), "good");
+    } else if (ok) {
+      const repGain = ri(1, 3) + (st.writing > 55 ? 1 : 0);
+      const netGain = ri(0, 2) + (st.comms > 55 ? 1 : 0);
+      const brandGain = ri(0, 2) + (st.brand > 40 ? 1 : 0);
+      // 小概率“打赏/咨询邀约”
+      const tip = Math.random() < 0.22 ? ri(200, 3500) : 0;
+      adjustAfterAction(state, { reputation: repGain, brand: brandGain, network: netGain, cash: tip, mood: +1, stamina: -1 });
+      if (tip > 0) {
+        if (!state.progress) state.progress = { noOrderWeeks: 0, totalWeeks: 0, earnedTotal: 0, findingsTotal: 0 };
+        state.progress.earnedTotal = (state.progress.earnedTotal || 0) + Math.max(0, tip);
+      }
+      state.world.xHeat = clamp(heat + ri(8, 18), 0, 100);
+      state.world.xLastOutcome = "ok";
+
+      const tpl = t(state, "x.brag.ok.templates");
+      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
+      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(180, 6800), rts: ri(40, 1600) });
+      const tipNote = tip > 0 ? t(state, "log.action.blog.tipNote", { tip }) : "";
+      log(state, t(state, "log.action.blog.ok", { rep: repGain, brand: brandGain, net: netGain, tipNote }), "info");
+    } else {
+      const repDown = ri(1, 4);
+      const brandDown = ri(1, 3);
+      const moodDown = ri(2, 5);
+      const complianceUp = Math.random() < 0.35 ? ri(1, 4) : 0; // 夸大承诺/误导
+      adjustAfterAction(state, { reputation: -repDown, brand: -brandDown, mood: -moodDown, stamina: -1, compliance: complianceUp });
+      state.world.xHeat = clamp(heat + ri(25, 45), 0, 100);
+      state.world.xLastOutcome = "fail";
+
+      const tpl = t(state, "x.brag.fail.templates");
+      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
+      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(80, 2400), rts: ri(30, 1400) });
+      const compNote = complianceUp > 0 ? t(state, "log.action.blog.compNote", { compliance: complianceUp }) : "";
+      log(state, t(state, "log.action.blog.fail", { rep: repDown, brand: brandDown, mood: moodDown, compNote }), "warn");
+    }
+  }
+
+  if (actionKey === "tweet") {
+    // 水推特：更低门槛、更随机、更“娱乐”；会联动 xHeat，并可能带来线索/商务/翻车
+    if (!state.world) state.world = { majorIncidentCooldown: 0, eventPityWeeks: 0, xHeat: 0, xLastOutcome: null, xLastPostTotalWeek: null };
+    const heat = clamp(Math.round(state.world.xHeat ?? 0), 0, 100);
+
+    const writing = clamp(st.writing ?? 0, 0, 100);
+    const comms = clamp(st.comms ?? 0, 0, 100);
+    const rep = clamp(st.reputation ?? 0, 0, 100);
+    const brand = clamp(st.brand ?? 0, 0, 100);
+    const mood = clamp(st.mood ?? 0, 0, 9999);
+
+    // 选一个“水法”：梗/热评/强行抛观点/吹牛逼
+    const modes = [
+      { k: "meme", w: 34 },
+      { k: "reply", w: 24 },
+      { k: "hot", w: 22 },
+      { k: "brag", w: 20 },
+    ];
+    const totalW = modes.reduce((a, b) => a + b.w, 0);
+    let r1 = Math.random() * totalW;
+    let mode = "meme";
+    for (const m of modes) {
+      r1 -= m.w;
+      if (r1 <= 0) {
+        mode = m.k;
+        break;
+      }
+    }
+
+    // 成功/爆火/翻车：水推特更看“名声/热度”，热度高也更容易翻车
+    const quality = (writing * 0.35 + comms * 0.35 + rep * 0.15 + brand * 0.15) / 100;
+    const scrutiny = heat / 120; // 热度越高越容易被盯
+    const moodMul = clamp(0.85 + mood / 600, 0.85, 1.1);
+
+    const okP = clamp(0.50 + quality * 0.28 + (mode === "meme" ? 0.04 : 0) - scrutiny * 0.18, 0.10, 0.92) * moodMul;
+    const viralP = clamp(0.05 + brand / 260 + rep / 520 + (mode === "meme" ? 0.03 : mode === "hot" ? 0.02 : 0) - heat / 750, 0.02, 0.22);
+    const failP = clamp(0.14 + scrutiny * 0.22 + (mode === "hot" ? 0.06 : mode === "brag" ? 0.08 : 0) - (comms + writing) / 700, 0.06, 0.45);
+
+    const roll = Math.random();
+    let outcome = "ok"; // ok | viral | fail
+    if (roll < viralP) outcome = "viral";
+    else if (roll > okP || roll < failP) outcome = "fail";
+
+    state.world.xLastPostTotalWeek = clamp(Math.round(state.progress?.totalWeeks ?? 0), 0, 999999);
+    state.world.xLastOutcome = outcome;
+
+    // 通用变化
+    let repDelta = 0;
+    let brandDelta = 0;
+    let netDelta = 0;
+    let cashDelta = 0;
+    let moodDelta = 0;
+    let compDelta = 0;
+    let heatDelta = 0;
+    let extraLog = "";
+
+    // 额外分支：小概率商务/线索
+    const dmP = clamp(0.02 + brand / 400 + (outcome === "viral" ? 0.10 : 0), 0.01, 0.16);
+    const leadP = clamp(0.03 + rep / 420 + (outcome === "viral" ? 0.08 : 0), 0.02, 0.20);
+
+    if (outcome === "viral") {
+      repDelta = ri(1, 4);
+      brandDelta = ri(4, 8);
+      netDelta = ri(1, 2);
+      cashDelta = ri(200, 6500);
+      moodDelta = ri(1, 3);
+      heatDelta = ri(22, 40);
+
+      // 商务 DM
+      if (Math.random() < dmP) {
+        const fee = ri(1200, 22000);
+        cashDelta += fee;
+        compDelta += Math.random() < 0.28 ? ri(1, 4) : 0;
+        extraLog = t(state, "log.action.tweet.dm", { fee });
+      } else if (Math.random() < leadP) {
+        // 线索：生成一条直客订单（不强制接）
+        state.market.direct = state.market.direct || [];
+        const order = makeDirectOrder(state);
+        state.market.direct.unshift(order);
+        extraLog = t(state, "log.action.tweet.lead");
+      }
+
+      const tpl = t(state, "x.tweet.viral.templates");
+      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
+      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(1800, 24000), rts: ri(380, 7800) });
+      const tipNote = cashDelta > 0 ? t(state, "log.action.tweet.tipNote", { tip: cashDelta }) : "";
+      log(
+        state,
+        t(state, "log.action.tweet.viral", { rep: repDelta, brand: brandDelta, net: netDelta, tipNote, extra: extraLog }),
+        "good"
+      );
+    } else if (outcome === "ok") {
+      repDelta = ri(0, 2);
+      brandDelta = ri(1, 3);
+      netDelta = ri(0, 1);
+      cashDelta = Math.random() < 0.12 ? ri(100, 1800) : 0;
+      moodDelta = ri(0, 1);
+      heatDelta = ri(8, 16);
+
+      if (Math.random() < dmP * 0.6) {
+        const fee = ri(600, 9000);
+        cashDelta += fee;
+        compDelta += Math.random() < 0.18 ? ri(1, 2) : 0;
+        extraLog = t(state, "log.action.tweet.dm", { fee });
+      } else if (Math.random() < leadP * 0.45) {
+        state.market.direct = state.market.direct || [];
+        const order = makeDirectOrder(state);
+        state.market.direct.unshift(order);
+        extraLog = t(state, "log.action.tweet.lead");
+      }
+
+      const tpl = t(state, "x.tweet.ok.templates");
+      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
+      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(60, 5200), rts: ri(10, 900) });
+      const tipNote = cashDelta > 0 ? t(state, "log.action.tweet.tipNote", { tip: cashDelta }) : "";
+      log(state, t(state, "log.action.tweet.ok", { rep: repDelta, brand: brandDelta, net: netDelta, tipNote, extra: extraLog }), "info");
+    } else {
+      repDelta = -ri(0, 2);
+      brandDelta = -ri(1, 4);
+      moodDelta = -ri(2, 5);
+      compDelta = Math.random() < 0.25 ? ri(1, 4) : 0;
+      heatDelta = ri(18, 34);
+
+      const tpl = t(state, "x.tweet.fail.templates");
+      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
+      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(20, 2200), rts: ri(10, 1200) });
+      const compNote = compDelta > 0 ? t(state, "log.action.tweet.compNote", { compliance: compDelta }) : "";
+      log(
+        state,
+        t(state, "log.action.tweet.fail", {
+          rep: Math.abs(repDelta),
+          brand: Math.abs(brandDelta),
+          mood: Math.abs(moodDelta),
+          compNote,
+        }),
+        "warn"
+      );
+    }
+
+    adjustAfterAction(state, {
+      reputation: repDelta,
+      brand: brandDelta,
+      network: netDelta,
+      cash: cashDelta,
+      mood: moodDelta,
+      stamina: -1,
+      compliance: compDelta,
+    });
+
+    if (cashDelta > 0) {
+      ensureProgress(state);
+      state.progress.earnedTotal = (state.progress.earnedTotal || 0) + Math.max(0, Math.round(cashDelta));
+    }
+
+    state.world.xHeat = clamp(heat + heatDelta, 0, 100);
   }
 
   if (actionKey === "learn") {

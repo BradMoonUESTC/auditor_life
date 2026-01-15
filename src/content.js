@@ -130,4 +130,10 @@ export const SHOP_ITEMS = [
   { key: "training_pack", kind: "consumable", once: false, cost: 500 },
 ];
 
+// Feedback (Google Forms embed)
+// - 使用 Google Forms 最省事：用户提交自动进 Google Sheet
+// - 这里放 iframe 的 src 即可（embedded=true）
+export const FEEDBACK_FORM_EMBED_URL =
+  "https://docs.google.com/forms/d/e/1FAIpQLSdy7-mhsrVVAQrxnyxskTe-UKwzry8LBgB1o9zFDUnF1jP2nA/viewform?embedded=true";
+
 

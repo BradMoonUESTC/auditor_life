@@ -1,5 +1,5 @@
-import { clamp, ri } from "./utils.js?v=38";
-import { setLang, t } from "./i18n.js?v=38";
+import { clamp, ri } from "./utils.js?v=54";
+import { setLang, t } from "./i18n.js?v=54";
 
 export function defaultState() {
   const s = {
@@ -70,7 +70,19 @@ export function defaultState() {
     posture: { monitoring: 10, tests: 10, runbooks: 10 },
     research: { topics: ["ai_audit"], progress: { aiAudit: 0 }, internalAdoption: { aiAudit: 0 }, published: { aiAudit: 0 } },
     majorIncident: null,
-    world: { majorIncidentCooldown: 0, eventPityWeeks: 0 },
+    world: {
+      majorIncidentCooldown: 0,
+      eventPityWeeks: 0,
+      // X 舆情热度：吹逼/爆火/翻车后会上升，后续更容易触发相关事件；每周会自然衰减
+      xHeat: 0, // 0~100
+      xLastOutcome: null, // 'ok'|'viral'|'fail'|null
+      xLastPostTotalWeek: null, // number|null
+    },
+    inbox: {
+      // 每周刷新的“可选事件列表”：用户可以点开看、处理或忽略；不处理也不会卡住流程
+      // items: { id, def, created:{year,week}, expiresInWeeks, payload? }
+      items: [],
+    },
     flags: {
       tutorialShown: false,
       startFilled: false,
@@ -225,6 +237,32 @@ export function normalizeState(state) {
   if (typeof state.world.majorIncidentCooldown !== "number") state.world.majorIncidentCooldown = 0;
   if (typeof state.world.eventPityWeeks !== "number") state.world.eventPityWeeks = 0;
   state.world.eventPityWeeks = clamp(Math.round(state.world.eventPityWeeks), 0, 99);
+  if (typeof state.world.xHeat !== "number") state.world.xHeat = 0;
+  state.world.xHeat = clamp(Math.round(state.world.xHeat), 0, 100);
+  if (state.world.xLastOutcome !== "ok" && state.world.xLastOutcome !== "viral" && state.world.xLastOutcome !== "fail") {
+    state.world.xLastOutcome = null;
+  }
+  if (typeof state.world.xLastPostTotalWeek !== "number") state.world.xLastPostTotalWeek = null;
+  if (typeof state.world.xLastPostTotalWeek === "number") {
+    state.world.xLastPostTotalWeek = clamp(Math.round(state.world.xLastPostTotalWeek), 0, 999999);
+  }
+
+  // inbox（可选事件列表）
+  if (!state.inbox) state.inbox = { items: [] };
+  if (!Array.isArray(state.inbox.items)) state.inbox.items = [];
+  // 清理无效项 & clamp
+  state.inbox.items = state.inbox.items
+    .filter((it) => it && typeof it.id === "string" && typeof it.def === "string")
+    .map((it) => {
+      if (!it.created || typeof it.created.year !== "number" || typeof it.created.week !== "number") it.created = { ...(state.now || { year: 1, week: 1 }) };
+      it.created.year = clamp(Math.round(it.created.year), 0, 9999);
+      it.created.week = clamp(Math.round(it.created.week), 1, 52);
+      if (typeof it.expiresInWeeks !== "number") it.expiresInWeeks = 2;
+      it.expiresInWeeks = clamp(Math.round(it.expiresInWeeks), 1, 8);
+      if (typeof it.payload !== "object" || !it.payload) it.payload = {};
+      return it;
+    })
+    .slice(0, 30);
 
   // shop/items
   if (!state.shop) state.shop = { owned: {} };

@@ -1,6 +1,6 @@
-import { $ } from "./dom.js?v=38";
-import { escapeHtml } from "./utils.js?v=38";
-import { t } from "./i18n.js?v=38";
+import { $ } from "./dom.js?v=54";
+import { escapeHtml } from "./utils.js?v=54";
+import { t } from "./i18n.js?v=54";
 
 export function openModal({ title, body, actions }) {
   $("#modalTitle").textContent = title;
