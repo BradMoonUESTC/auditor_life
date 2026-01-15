@@ -1,6 +1,6 @@
-import { clamp, pick, ri } from "./utils.js?v=54";
-import { adjustAfterAction, healthCap, log, spendAP } from "./state.js?v=54";
-import { t } from "./i18n.js?v=54";
+import { clamp, pick, ri } from "./utils.js?v=57";
+import { adjustAfterAction, healthCap, log, spendAP } from "./state.js?v=57";
+import { t } from "./i18n.js?v=57";
 
 /**
  * @typedef {{id:string,title:string,desc:(s:any)=>string,when:(s:any)=>boolean,choices:(s:any)=>{label:string,primary?:boolean,apply:(stt:any)=>void}[]}} GameEvent
@@ -25,7 +25,7 @@ export function rollEvents(state) {
         const heat = clamp(Math.round(s.world?.xHeat ?? 0), 0, 100);
         if (heat < 35) return false;
         const last = s.world?.xLastOutcome;
-        const base = last === "fail" ? 0.42 : 0.18;
+        const base = last === "fail" || last === "meltdown" ? 0.42 : 0.18;
         return Math.random() < base;
       },
       desc: (s) => t(s, "event.x_callout.desc"),
@@ -1009,6 +1009,361 @@ export function inboxDefs() {
         },
       ],
     },
+    // ===== X 打脸剧情链（social）=====
+    {
+      id: "xdrama_quote",
+      kind: "social",
+      titleKey: "inbox.xdrama_quote.title",
+      descKey: "inbox.xdrama_quote.desc",
+      gen: (s) => ({ topic: String(s.world?.xDrama?.topic || "") }),
+      choices: [
+        {
+          labelKey: "inbox.xdrama.choice.delete",
+          primary: true,
+          tone: "info",
+          apply: (stt) => {
+            if (stt.world?.xDrama) {
+              stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) - ri(8, 16)), 0, 100);
+            }
+            adjustAfterAction(stt, { mood: -1, brand: -1 });
+            log(stt, t(stt, "inbox.xdrama.log.delete"), "warn");
+          },
+        },
+        {
+          labelKey: "inbox.xdrama.choice.apologize",
+          tone: "good",
+          apply: (stt) => {
+            if (stt.world?.xDrama) {
+              stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) - ri(14, 26)), 0, 100);
+              stt.world.xDrama.stage = "callout";
+              stt.world.xDrama.weeksLeft = clamp((stt.world.xDrama.weeksLeft || 1) + 1, 1, 3);
+            }
+            adjustAfterAction(stt, { reputation: +1, brand: +1, mood: -1, compliance: -1 });
+            log(stt, t(stt, "inbox.xdrama.log.apologize"), "good");
+          },
+        },
+        {
+          labelKey: "inbox.xdrama.choice.doubleDown",
+          tone: "bad",
+          apply: (stt) => {
+            if (stt.world?.xDrama) {
+              stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) + ri(10, 20)), 0, 100);
+              stt.world.xDrama.stage = "callout";
+              stt.world.xDrama.weeksLeft = clamp((stt.world.xDrama.weeksLeft || 1) + 1, 1, 3);
+            }
+            if (!stt.world) stt.world = {};
+            stt.world.xHeat = clamp(Math.round((stt.world.xHeat ?? 0) + ri(10, 18)), 0, 100);
+            adjustAfterAction(stt, { reputation: -1, brand: -1, mood: -2, compliance: +1 });
+            log(stt, t(stt, "inbox.xdrama.log.doubleDown"), "bad");
+          },
+        },
+      ],
+    },
+    // ===== X 打脸剧情链（分支：被质疑收钱/商单未披露）=====
+    {
+      id: "xdrama_shill_spark",
+      kind: "social",
+      titleKey: "inbox.xdrama_shill_spark.title",
+      descKey: "inbox.xdrama_shill_spark.desc",
+      gen: (s) => ({ topic: String(s.world?.xDrama?.topic || "") }),
+      choices: [
+        {
+          labelKey: "inbox.xdrama.choice.disclose",
+          primary: true,
+          tone: "good",
+          apply: (stt) => {
+            if (stt.world?.xDrama) {
+              stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) - ri(18, 30)), 0, 100);
+              stt.world.xDrama.stage = "callout";
+              stt.world.xDrama.weeksLeft = clamp((stt.world.xDrama.weeksLeft || 1) + 1, 1, 3);
+            }
+            adjustAfterAction(stt, { reputation: +1, compliance: -2, mood: -1 });
+            log(stt, t(stt, "inbox.xdrama.log.disclose"), "good");
+          },
+        },
+        {
+          labelKey: "inbox.xdrama.choice.joke",
+          tone: "info",
+          apply: (stt) => {
+            if (!stt.world) stt.world = {};
+            stt.world.xHeat = clamp(Math.round((stt.world.xHeat ?? 0) + ri(6, 12)), 0, 100);
+            if (stt.world?.xDrama) stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) + ri(6, 14)), 0, 100);
+            const ok = Math.random() < clamp(0.28 + (stt.stats.comms || 0) / 280 + (stt.stats.brand || 0) / 320, 0.10, 0.70);
+            if (ok) {
+              adjustAfterAction(stt, { brand: +1, mood: +1 });
+              log(stt, t(stt, "inbox.xdrama.log.joke.ok"), "info");
+            } else {
+              adjustAfterAction(stt, { brand: -1, reputation: -1, mood: -2, compliance: +1 });
+              log(stt, t(stt, "inbox.xdrama.log.joke.fail"), "warn");
+            }
+          },
+        },
+        {
+          labelKey: "inbox.xdrama.choice.ignoreSilently",
+          tone: "warn",
+          apply: (stt) => {
+            if (stt.world?.xDrama) stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) + ri(4, 10)), 0, 100);
+            adjustAfterAction(stt, { mood: -1 });
+            log(stt, t(stt, "inbox.xdrama.log.silence"), "warn");
+          },
+        },
+      ],
+    },
+    {
+      id: "xdrama_shill_callout",
+      kind: "social",
+      titleKey: "inbox.xdrama_shill_callout.title",
+      descKey: "inbox.xdrama_shill_callout.desc",
+      gen: (s) => ({ topic: String(s.world?.xDrama?.topic || "") }),
+      choices: [
+        {
+          labelKey: "inbox.xdrama.choice.receipts",
+          primary: true,
+          tone: "good",
+          apply: (stt) => {
+            adjustAfterAction(stt, { stamina: -2, mood: -1 });
+            const ok = Math.random() < clamp(0.22 + (stt.stats.writing || 0) / 240 + (stt.stats.comms || 0) / 260, 0.08, 0.72);
+            if (ok) {
+              adjustAfterAction(stt, { reputation: +2, brand: +1, compliance: -1 });
+              if (stt.world?.xDrama) stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) - ri(18, 32)), 0, 100);
+              log(stt, t(stt, "inbox.xdrama.log.shill.receipts.ok"), "good");
+            } else {
+              adjustAfterAction(stt, { reputation: -2, brand: -1, mood: -2, compliance: +2 });
+              if (stt.world?.xDrama) stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) + ri(10, 18)), 0, 100);
+              log(stt, t(stt, "inbox.xdrama.log.shill.receipts.fail"), "bad");
+            }
+          },
+        },
+        {
+          labelKey: "inbox.xdrama.choice.cleanUp",
+          tone: "info",
+          apply: (stt) => {
+            if (stt.world?.xDrama) {
+              stt.world.xDrama.stage = "aftermath";
+              stt.world.xDrama.weeksLeft = 1;
+              stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) - ri(8, 16)), 0, 100);
+            }
+            adjustAfterAction(stt, { mood: -1, compliance: -1 });
+            log(stt, t(stt, "inbox.xdrama.log.cleanUp"), "info");
+          },
+        },
+      ],
+    },
+    {
+      id: "xdrama_shill_aftermath",
+      kind: "social",
+      titleKey: "inbox.xdrama_shill_aftermath.title",
+      descKey: "inbox.xdrama_shill_aftermath.desc",
+      gen: (s) => ({ topic: String(s.world?.xDrama?.topic || "") }),
+      choices: [
+        {
+          labelKey: "inbox.xdrama.choice.cleanUp",
+          primary: true,
+          tone: "good",
+          apply: (stt) => {
+            if (stt.world?.xDrama) {
+              stt.world.xDrama.stage = null;
+              stt.world.xDrama.weeksLeft = 0;
+              stt.world.xDrama.intensity = 0;
+              stt.world.xDrama.topic = "";
+            }
+            adjustAfterAction(stt, { mood: +1, compliance: -1 });
+            log(stt, t(stt, "inbox.xdrama.log.cleanUp"), "good");
+          },
+        },
+        {
+          labelKey: "inbox.xdrama.choice.keepFighting",
+          tone: "warn",
+          apply: (stt) => {
+            if (!stt.world) stt.world = {};
+            stt.world.xHeat = clamp(Math.round((stt.world.xHeat ?? 0) + ri(8, 14)), 0, 100);
+            adjustAfterAction(stt, { mood: -1, reputation: -1, compliance: +1 });
+            log(stt, t(stt, "inbox.xdrama.log.keepFighting"), "warn");
+          },
+        },
+      ],
+    },
+    // ===== X 打脸剧情链（分支：旧帖考古/黑历史）=====
+    {
+      id: "xdrama_old_spark",
+      kind: "social",
+      titleKey: "inbox.xdrama_old_spark.title",
+      descKey: "inbox.xdrama_old_spark.desc",
+      gen: (s) => ({ topic: String(s.world?.xDrama?.topic || "") }),
+      choices: [
+        {
+          labelKey: "inbox.xdrama.choice.ownIt",
+          primary: true,
+          tone: "good",
+          apply: (stt) => {
+            if (stt.world?.xDrama) {
+              stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) - ri(14, 26)), 0, 100);
+              stt.world.xDrama.stage = "callout";
+              stt.world.xDrama.weeksLeft = clamp((stt.world.xDrama.weeksLeft || 1) + 1, 1, 3);
+            }
+            adjustAfterAction(stt, { reputation: +1, mood: -1 });
+            log(stt, t(stt, "inbox.xdrama.log.ownIt"), "good");
+          },
+        },
+        {
+          labelKey: "inbox.xdrama.choice.deleteHistory",
+          tone: "warn",
+          apply: (stt) => {
+            if (stt.world?.xDrama) stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) + ri(10, 18)), 0, 100);
+            adjustAfterAction(stt, { brand: -1, mood: -2 });
+            log(stt, t(stt, "inbox.xdrama.log.deleteHistory"), "warn");
+          },
+        },
+        {
+          labelKey: "inbox.xdrama.choice.doubleDown",
+          tone: "bad",
+          apply: (stt) => {
+            if (!stt.world) stt.world = {};
+            stt.world.xHeat = clamp(Math.round((stt.world.xHeat ?? 0) + ri(10, 18)), 0, 100);
+            if (stt.world?.xDrama) {
+              stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) + ri(14, 24)), 0, 100);
+              stt.world.xDrama.stage = "callout";
+              stt.world.xDrama.weeksLeft = clamp((stt.world.xDrama.weeksLeft || 1) + 1, 1, 3);
+            }
+            adjustAfterAction(stt, { reputation: -1, brand: -1, mood: -2 });
+            log(stt, t(stt, "inbox.xdrama.log.doubleDown"), "bad");
+          },
+        },
+      ],
+    },
+    {
+      id: "xdrama_old_callout",
+      kind: "social",
+      titleKey: "inbox.xdrama_old_callout.title",
+      descKey: "inbox.xdrama_old_callout.desc",
+      gen: (s) => ({ topic: String(s.world?.xDrama?.topic || "") }),
+      choices: [
+        {
+          labelKey: "inbox.xdrama.choice.cleanUp",
+          primary: true,
+          tone: "good",
+          apply: (stt) => {
+            adjustAfterAction(stt, { writing: +1, mood: -1 });
+            if (stt.world?.xDrama) stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) - ri(16, 28)), 0, 100);
+            log(stt, t(stt, "inbox.xdrama.log.cleanUp"), "good");
+          },
+        },
+        {
+          labelKey: "inbox.xdrama.choice.lurk",
+          tone: "info",
+          apply: (stt) => {
+            if (stt.world?.xDrama) stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) - ri(6, 12)), 0, 100);
+            adjustAfterAction(stt, { mood: +1 });
+            log(stt, t(stt, "inbox.xdrama.log.lurk"), "info");
+          },
+        },
+      ],
+    },
+    {
+      id: "xdrama_old_aftermath",
+      kind: "social",
+      titleKey: "inbox.xdrama_old_aftermath.title",
+      descKey: "inbox.xdrama_old_aftermath.desc",
+      gen: (s) => ({ topic: String(s.world?.xDrama?.topic || "") }),
+      choices: [
+        {
+          labelKey: "inbox.xdrama.choice.cleanUp",
+          primary: true,
+          tone: "good",
+          apply: (stt) => {
+            if (stt.world?.xDrama) {
+              stt.world.xDrama.stage = null;
+              stt.world.xDrama.weeksLeft = 0;
+              stt.world.xDrama.intensity = 0;
+              stt.world.xDrama.topic = "";
+            }
+            adjustAfterAction(stt, { mood: +1 });
+            log(stt, t(stt, "inbox.xdrama.log.cleanUp"), "good");
+          },
+        },
+        {
+          labelKey: "inbox.xdrama.choice.keepFighting",
+          tone: "warn",
+          apply: (stt) => {
+            if (!stt.world) stt.world = {};
+            stt.world.xHeat = clamp(Math.round((stt.world.xHeat ?? 0) + ri(6, 12)), 0, 100);
+            adjustAfterAction(stt, { mood: -1, reputation: -1 });
+            log(stt, t(stt, "inbox.xdrama.log.keepFighting"), "warn");
+          },
+        },
+      ],
+    },
+    {
+      id: "xdrama_receipts",
+      kind: "social",
+      titleKey: "inbox.xdrama_receipts.title",
+      descKey: "inbox.xdrama_receipts.desc",
+      gen: (s) => ({ topic: String(s.world?.xDrama?.topic || "") }),
+      choices: [
+        {
+          labelKey: "inbox.xdrama.choice.receipts",
+          primary: true,
+          tone: "good",
+          apply: (stt) => {
+            // 花精力换翻盘概率
+            adjustAfterAction(stt, { stamina: -2, mood: -1 });
+            const ok = Math.random() < clamp(0.25 + (stt.stats.writing || 0) / 220 + (stt.stats.comms || 0) / 260, 0.10, 0.70);
+            if (ok) {
+              adjustAfterAction(stt, { reputation: +2, brand: +1 });
+              if (stt.world?.xDrama) stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) - ri(18, 30)), 0, 100);
+              log(stt, t(stt, "inbox.xdrama.log.receipts.ok"), "good");
+            } else {
+              adjustAfterAction(stt, { reputation: -1, brand: -1, mood: -2 });
+              if (stt.world?.xDrama) stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) + ri(8, 16)), 0, 100);
+              log(stt, t(stt, "inbox.xdrama.log.receipts.fail"), "warn");
+            }
+          },
+        },
+        {
+          labelKey: "inbox.xdrama.choice.lurk",
+          tone: "info",
+          apply: (stt) => {
+            if (stt.world?.xDrama) stt.world.xDrama.intensity = clamp(Math.round((stt.world.xDrama.intensity || 0) - ri(6, 12)), 0, 100);
+            adjustAfterAction(stt, { mood: +1 });
+            log(stt, t(stt, "inbox.xdrama.log.lurk"), "info");
+          },
+        },
+      ],
+    },
+    {
+      id: "xdrama_aftermath",
+      kind: "social",
+      titleKey: "inbox.xdrama_aftermath.title",
+      descKey: "inbox.xdrama_aftermath.desc",
+      gen: (s) => ({ topic: String(s.world?.xDrama?.topic || "") }),
+      choices: [
+        {
+          labelKey: "inbox.xdrama.choice.cleanUp",
+          primary: true,
+          tone: "good",
+          apply: (stt) => {
+            if (stt.world?.xDrama) {
+              stt.world.xDrama.stage = null;
+              stt.world.xDrama.weeksLeft = 0;
+              stt.world.xDrama.intensity = 0;
+              stt.world.xDrama.topic = "";
+            }
+            adjustAfterAction(stt, { mood: +1, compliance: -1 });
+            log(stt, t(stt, "inbox.xdrama.log.cleanUp"), "good");
+          },
+        },
+        {
+          labelKey: "inbox.xdrama.choice.keepFighting",
+          tone: "warn",
+          apply: (stt) => {
+            if (!stt.world) stt.world = {};
+            stt.world.xHeat = clamp(Math.round((stt.world.xHeat ?? 0) + ri(8, 14)), 0, 100);
+            adjustAfterAction(stt, { mood: -1, reputation: -1 });
+            log(stt, t(stt, "inbox.xdrama.log.keepFighting"), "warn");
+          },
+        },
+      ],
+    },
     {
       id: "meme_wagmi_ngmi",
       kind: "meme",
@@ -1057,8 +1412,31 @@ export function seedEventInbox(state) {
   const ageWeeks = (it) => (nowY - it.created.year) * 52 + (nowW - it.created.week);
   state.inbox.items = state.inbox.items.filter((it) => ageWeeks(it) <= (it.expiresInWeeks ?? 2));
 
-  // 每周生成 3~5 条“可选事件”，并尽量保证种类多样（至少 meme + security）
-  const want = ri(3, 5);
+  // ===== X 打脸剧情链：每周推进一次（不依赖用户点不点）=====
+  const xd = state.world?.xDrama;
+  if (xd && xd.stage) {
+    xd.weeksLeft = clamp((xd.weeksLeft || 0) - 1, 0, 8);
+    xd.intensity = clamp(Math.round((xd.intensity || 0) - ri(6, 14)), 0, 100);
+    if (xd.weeksLeft <= 0) {
+      if (xd.stage === "spark") {
+        xd.stage = "callout";
+        xd.weeksLeft = ri(1, 2);
+        xd.intensity = clamp(Math.round((xd.intensity || 0) + ri(10, 22)), 0, 100);
+      } else if (xd.stage === "callout") {
+        xd.stage = "aftermath";
+        xd.weeksLeft = 1;
+        xd.intensity = clamp(Math.round((xd.intensity || 0) - ri(10, 20)), 0, 100);
+      } else {
+        xd.stage = null;
+        xd.weeksLeft = 0;
+        xd.intensity = 0;
+        xd.topic = "";
+      }
+    }
+  }
+
+  // 每周生成 5~8 条“可选事件”（更有“世界在动”的体感），并尽量保证种类多样
+  const want = ri(5, 8);
   const defs = inboxDefs();
   const byKind = {
     meme: defs.filter((d) => d.kind === "meme"),
@@ -1084,6 +1462,29 @@ export function seedEventInbox(state) {
   };
 
   let added = 0;
+
+  // X 打脸剧情：优先塞进 inbox（尽量不弹窗打断你干活）
+  if (xd && xd.stage) {
+    const pickDrama = () => {
+      const v = String(xd.variant || "quote");
+      if (v === "shill") {
+        if (xd.stage === "spark") return defs.find((d) => d.id === "xdrama_shill_spark");
+        if (xd.stage === "callout") return defs.find((d) => d.id === "xdrama_shill_callout");
+        if (xd.stage === "aftermath") return defs.find((d) => d.id === "xdrama_shill_aftermath");
+      }
+      if (v === "old") {
+        if (xd.stage === "spark") return defs.find((d) => d.id === "xdrama_old_spark");
+        if (xd.stage === "callout") return defs.find((d) => d.id === "xdrama_old_callout");
+        if (xd.stage === "aftermath") return defs.find((d) => d.id === "xdrama_old_aftermath");
+      }
+      if (xd.stage === "spark") return defs.find((d) => d.id === "xdrama_quote");
+      if (xd.stage === "callout") return defs.find((d) => d.id === "xdrama_receipts");
+      if (xd.stage === "aftermath") return defs.find((d) => d.id === "xdrama_aftermath");
+      return null;
+    };
+    if (addOne(pickDrama())) added += 1;
+  }
+
   // 先保证 meme + security
   if (addOne(pick(byKind.security))) added += 1;
   if (added < want && addOne(pick(byKind.meme))) added += 1;
@@ -1096,6 +1497,22 @@ export function seedEventInbox(state) {
     if (added >= want) break;
     if (addOne(d)) added += 1;
   }
+
+  // 保底：至少给 1 个“会改变资源/机会”的条目（不是纯段子）
+  const impactIds = new Set([
+    "market_airdrop_farm",
+    "market_stable_depeg",
+    "social_tg_scam",
+    "sec_oracle_glitch",
+    "sec_l2_sequencer_down",
+    "sec_upgrade_admin_key",
+  ]);
+  const hasImpactThisWeek = state.inbox.items.some((x) => x.created?.year === nowY && x.created?.week === nowW && impactIds.has(x.def));
+  if (!hasImpactThisWeek) {
+    const impDefs = defs.filter((d) => impactIds.has(d.id));
+    addOne(pick(impDefs));
+  }
+
   state.inbox.items = state.inbox.items.slice(0, 30);
 }
 

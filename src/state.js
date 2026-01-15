@@ -1,5 +1,5 @@
-import { clamp, ri } from "./utils.js?v=54";
-import { setLang, t } from "./i18n.js?v=54";
+import { clamp, ri } from "./utils.js?v=57";
+import { setLang, t } from "./i18n.js?v=57";
 
 export function defaultState() {
   const s = {
@@ -7,6 +7,9 @@ export function defaultState() {
     settings: {
       lang: "en",
       healthCap: 150, // 精力/心态上限（血更厚）
+      // 赛季长度：默认按“52 周”玩（不再 12 周速通人生）
+      // 可选：12/24/36/52（实现上允许其它值，但 UI 只给这几个）
+      seasonWeeks: 52,
       auto: {
         enabled: false,
         focus: "balanced", // balanced|direct|platform|company|incident|research|survival
@@ -77,6 +80,8 @@ export function defaultState() {
       xHeat: 0, // 0~100
       xLastOutcome: null, // 'ok'|'viral'|'fail'|null
       xLastPostTotalWeek: null, // number|null
+      // X 打脸剧情链：连续 1~3 周的“被追打/澄清/收尾”
+      xDrama: { stage: null, intensity: 0, topic: "", variant: "quote", weeksLeft: 0 },
     },
     inbox: {
       // 每周刷新的“可选事件列表”：用户可以点开看、处理或忽略；不处理也不会卡住流程
@@ -124,6 +129,10 @@ export function normalizeState(state) {
   if (state.settings.lang !== "zh") state.settings.lang = "en";
   if (typeof state.settings.healthCap !== "number") state.settings.healthCap = 150;
   state.settings.healthCap = clamp(Math.round(state.settings.healthCap), 120, 260);
+  if (typeof state.settings.seasonWeeks !== "number") state.settings.seasonWeeks = 52;
+  // 只允许 UI 提供的档位（避免旧存档/手改导致奇怪体验）
+  const sw = clamp(Math.round(state.settings.seasonWeeks), 8, 5200);
+  state.settings.seasonWeeks = [12, 24, 36, 52].includes(sw) ? sw : 52;
 
   // 默认 profile：仅对“默认名字/称号”做语言映射，避免英文界面残留中文
   if (!state.player) state.player = { name: "马某某·审计师", title: "自由审计师（从零开荒）" };
@@ -239,13 +248,21 @@ export function normalizeState(state) {
   state.world.eventPityWeeks = clamp(Math.round(state.world.eventPityWeeks), 0, 99);
   if (typeof state.world.xHeat !== "number") state.world.xHeat = 0;
   state.world.xHeat = clamp(Math.round(state.world.xHeat), 0, 100);
-  if (state.world.xLastOutcome !== "ok" && state.world.xLastOutcome !== "viral" && state.world.xLastOutcome !== "fail") {
+  if (!["flop", "ok", "pop", "viral", "fail", "meltdown"].includes(String(state.world.xLastOutcome))) {
     state.world.xLastOutcome = null;
   }
   if (typeof state.world.xLastPostTotalWeek !== "number") state.world.xLastPostTotalWeek = null;
   if (typeof state.world.xLastPostTotalWeek === "number") {
     state.world.xLastPostTotalWeek = clamp(Math.round(state.world.xLastPostTotalWeek), 0, 999999);
   }
+  if (!state.world.xDrama) state.world.xDrama = { stage: null, intensity: 0, topic: "", variant: "quote", weeksLeft: 0 };
+  if (!["spark", "callout", "aftermath", null].includes(state.world.xDrama.stage)) state.world.xDrama.stage = null;
+  if (typeof state.world.xDrama.intensity !== "number") state.world.xDrama.intensity = 0;
+  state.world.xDrama.intensity = clamp(Math.round(state.world.xDrama.intensity), 0, 100);
+  if (typeof state.world.xDrama.topic !== "string") state.world.xDrama.topic = "";
+  if (!["quote", "shill", "old"].includes(String(state.world.xDrama.variant))) state.world.xDrama.variant = "quote";
+  if (typeof state.world.xDrama.weeksLeft !== "number") state.world.xDrama.weeksLeft = 0;
+  state.world.xDrama.weeksLeft = clamp(Math.round(state.world.xDrama.weeksLeft), 0, 8);
 
   // inbox（可选事件列表）
   if (!state.inbox) state.inbox = { items: [] };

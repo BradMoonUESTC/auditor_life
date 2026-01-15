@@ -1,10 +1,10 @@
-import { $, $$ } from "./dom.js?v=54";
-import { clamp, escapeHtml, money } from "./utils.js?v=54";
-import { save } from "./storage.js?v=54";
-import { healthCap, normalizeState, refreshAP, weekLabel } from "./state.js?v=54";
-import { actionCost, ensureSelection, findTarget, itemCount, protocolLabel } from "./logic.js?v=54";
-import { SHOP_ITEMS } from "./content.js?v=54";
-import { applyI18nDom, t as tr } from "./i18n.js?v=54";
+import { $, $$ } from "./dom.js?v=57";
+import { clamp, escapeHtml, money } from "./utils.js?v=57";
+import { save } from "./storage.js?v=57";
+import { healthCap, normalizeState, refreshAP, weekLabel } from "./state.js?v=57";
+import { actionCost, ensureSelection, findTarget, itemCount, protocolLabel } from "./logic.js?v=57";
+import { SHOP_ITEMS } from "./content.js?v=57";
+import { applyI18nDom, t as tr } from "./i18n.js?v=57";
 
 export function switchTab(tabKey) {
   for (const btn of $$(".tab")) {
@@ -203,6 +203,14 @@ export function render(state) {
     sel.title = lockedByWork ? tr(state, "ui.hours.locked") : tr(state, "ui.hours.title");
   }
 
+  const seasonSel = $("#seasonWeeks");
+  if (seasonSel) {
+    const sw = clamp(Math.round(state.settings?.seasonWeeks ?? 52), 8, 5200);
+    seasonSel.value = String([12, 24, 36, 52].includes(sw) ? sw : 52);
+    seasonSel.disabled = Boolean(state.flags.gameOver);
+    seasonSel.title = tr(state, "ui.season.title");
+  }
+
   // Topbar language buttons
   const isEn = state.settings?.lang === "en";
   const btnEn = document.querySelector('[data-ui="langEn"]');
@@ -256,8 +264,18 @@ function renderInbox(state) {
   wrap.innerHTML = items
     .slice(0, 20)
     .map((it) => {
-      const title = tr(state, `inbox.${it.def}.title`);
-      const chip = tr(state, `ui.inbox.kind.${String(it.def).startsWith("sec_") ? "security" : String(it.def).startsWith("market_") ? "market" : String(it.def).startsWith("social_") ? "social" : "meme"}`);
+      const vars = it.payload || {};
+      const title = tr(state, `inbox.${it.def}.title`, vars);
+      const defKey = String(it.def);
+      const kind =
+        defKey.startsWith("sec_")
+          ? "security"
+          : defKey.startsWith("market_")
+            ? "market"
+            : defKey.startsWith("social_") || defKey.startsWith("xdrama_")
+              ? "social"
+              : "meme";
+      const chip = tr(state, `ui.inbox.kind.${kind}`);
       return `
       <div class="item" style="display:flex;gap:10px;align-items:flex-start;justify-content:space-between;">
         <div style="min-width:0;">
@@ -845,6 +863,7 @@ function renderXFeed(state) {
  *  onFeedback?:()=>void,
  *  onCloseModal:()=>void,
  *  onHoursChange:(h:number)=>void,
+ *  onSeasonChange?:(weeks:number)=>void,
  *  onLangChange?:(lang:string)=>void
  *  onAutoChange?:(next:any)=>void
  *  onCareer?:(raw:string)=>void
@@ -930,6 +949,14 @@ export function bind(state, handlers) {
     hoursSel.addEventListener("change", () => {
       const next = parseInt(hoursSel.value, 10) || 8;
       handlers.onHoursChange(next);
+    });
+  }
+
+  const seasonSel = $("#seasonWeeks");
+  if (seasonSel) {
+    seasonSel.addEventListener("change", () => {
+      const next = parseInt(seasonSel.value, 10) || 52;
+      handlers.onSeasonChange?.(next);
     });
   }
 

@@ -7,7 +7,7 @@
     <meta name="description" content="Web3 Auditor 模拟器：按周推进的数值+文案驱动小游戏（纯前端，无依赖）。" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%237c5cff'/%3E%3Ctext x='32' y='42' font-size='34' text-anchor='middle'%3E%F0%9F%95%B5%EF%B8%8F%3C/text%3E%3C/svg%3E" />
     <!-- cache-bust: 防止某些环境下样式被强缓存导致改动不生效 -->
-    <link rel="stylesheet" href="./styles.css?v=54" />
+    <link rel="stylesheet" href="./styles.css?v=57" />
   </head>
   <body>
     <header class="topbar">
@@ -66,6 +66,15 @@
                 <option value="20" data-i18n="ui.hours.opt.20">20h/天（接近不睡）</option>
                 <option value="22" data-i18n="ui.hours.opt.22">22h/天（几乎不睡，严重损害）</option>
                 <option value="24" data-i18n="ui.hours.opt.24">24h/天（不睡觉，毁灭性损害）</option>
+              </select>
+            </div>
+            <div class="ap__hint muted" style="margin-top:8px;">
+              <span data-i18n="ui.sidebar.season">赛季长度：</span>
+              <select id="seasonWeeks" class="select" data-i18n-title="ui.season.title">
+                <option value="12" data-i18n="ui.season.opt.12">12 周（速通）</option>
+                <option value="24" data-i18n="ui.season.opt.24">24 周（中速）</option>
+                <option value="36" data-i18n="ui.season.opt.36">36 周（慢热）</option>
+                <option value="52" selected data-i18n="ui.season.opt.52">52 周（默认）</option>
               </select>
             </div>
             <div class="ap__hint muted" data-i18n="ui.sidebar.apHint">行动会消耗行动点；结束本周会触发事件与结算。</div>
@@ -276,7 +285,7 @@
     </div>
 
     <!-- cache-bust: 防止浏览器缓存旧的 JS 模块导致功能更新不生效 -->
-    <script type="module" src="./src/main.js?v=54"></script>
+    <script type="module" src="./src/main.js?v=57"></script>
   </body>
 </html>
 

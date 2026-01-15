@@ -1,7 +1,7 @@
 // cache-bust: 避免浏览器强缓存旧模块导致“按钮没反应/文案不更新”
-import { clamp, escapeHtml } from "./utils.js?v=54";
-import { load, resetStorage, save } from "./storage.js?v=54";
-import { adjustAfterAction, defaultState, healthCap, log, normalizeState, refreshAP, weekLabel } from "./state.js?v=54";
+import { clamp, escapeHtml } from "./utils.js?v=57";
+import { load, resetStorage, save } from "./storage.js?v=57";
+import { adjustAfterAction, defaultState, healthCap, log, normalizeState, refreshAP, weekLabel } from "./state.js?v=57";
 import {
   acceptJob,
   actionCost,
@@ -19,15 +19,15 @@ import {
   settleProjects,
   tickLeaderboards,
   useItem,
-} from "./logic.js?v=54";
-import { rollEvents, inboxDefs, seedEventInbox } from "./events.js?v=54";
-import { closeModal, openModal, toast } from "./modal.js?v=54";
-import { bind, initResizableLayout, render, switchTab } from "./ui.js?v=54";
-import { addXPosts } from "./xfeed.js?v=54";
-import { setLang, t } from "./i18n.js?v=54";
-import { pickAutoStep } from "./auto.js?v=54";
-import { applyNegotiationMove, negotiationBody, negotiationMoves, startDirectNegotiation } from "./negotiation.js?v=54";
-import { FEEDBACK_FORM_EMBED_URL } from "./content.js?v=54";
+} from "./logic.js?v=57";
+import { rollEvents, inboxDefs, seedEventInbox } from "./events.js?v=57";
+import { closeModal, openModal, toast } from "./modal.js?v=57";
+import { bind, initResizableLayout, render, switchTab } from "./ui.js?v=57";
+import { addXPosts } from "./xfeed.js?v=57";
+import { setLang, t } from "./i18n.js?v=57";
+import { pickAutoStep } from "./auto.js?v=57";
+import { applyNegotiationMove, negotiationBody, negotiationMoves, startDirectNegotiation } from "./negotiation.js?v=57";
+import { FEEDBACK_FORM_EMBED_URL } from "./content.js?v=57";
 
 function isFreshStart(state) {
   return (
@@ -249,6 +249,10 @@ function triggerEnd(state, kind, title, reason, restart) {
 function checkEndings(state, restart) {
   if (state.flags.gameOver) return;
   const s = state.stats;
+  const totalWeeks = clamp(Math.round(state.progress?.totalWeeks ?? 0), 0, 999999);
+  const seasonWeeks = clamp(Math.round(state.settings?.seasonWeeks ?? 52), 8, 5200);
+  // 赢家别太早：默认至少 24 周后才允许触发 win（避免 12 周速通）
+  const minWinWeeks = seasonWeeks >= 24 ? 24 : clamp(seasonWeeks - 2, 6, 23);
 
   if (s.cash < 0) return triggerEnd(state, "lose", "资金链断裂", "现金为负，无法维持开销。", restart);
   if (s.stamina <= 0) return triggerEnd(state, "lose", "身心崩溃", "精力归零：你连 IDE 都不想打开了。", restart);
@@ -259,8 +263,10 @@ function checkEndings(state, restart) {
   // 经济缩放：现金阈值相应降低
   const win1 = s.reputation >= 90 && s.compliance < 20 && s.cash >= 20000;
   const win2 = s.platformRating >= 70 && s.reputation >= 60 && s.compliance < 35;
-  if (win1) return triggerEnd(state, "win", "合伙人结局", "你建立了稳定的品牌与交付体系，成为行业“常青树”。", restart);
-  if (win2) return triggerEnd(state, "win", "平台封神结局", "你在平台赛道冲到前排，名字被写进邀请名单。", restart);
+  if (totalWeeks >= minWinWeeks) {
+    if (win1) return triggerEnd(state, "win", "合伙人结局", "你建立了稳定的品牌与交付体系，成为行业“常青树”。", restart);
+    if (win2) return triggerEnd(state, "win", "平台封神结局", "你在平台赛道冲到前排，名字被写进邀请名单。", restart);
+  }
 }
 
 function playEventsSequentially(state, events, done) {
@@ -530,9 +536,10 @@ function main() {
 
       const open = () => {
         const choices = Array.isArray(def.choices) ? def.choices : [];
+        const vars = item.payload || {};
         openModal({
-          title: t(state, def.titleKey),
-          body: `<div>${escapeHtml(t(state, def.descKey))}</div>`,
+          title: t(state, def.titleKey, vars),
+          body: `<div>${escapeHtml(t(state, def.descKey, vars))}</div>`,
           actions: [
             ...choices.map((c) => ({
               label: t(state, c.labelKey),
@@ -712,6 +719,15 @@ function main() {
             ? t(state, "log.hours.set.chill", { h: next })
             : t(state, "log.hours.set.normal")
       );
+      render(state);
+    },
+    onSeasonChange: (weeks) => {
+      normalizeState(state);
+      if (state.flags.gameOver) return;
+      const sw = clamp(Math.round(weeks || 52), 8, 5200);
+      state.settings.seasonWeeks = [12, 24, 36, 52].includes(sw) ? sw : 52;
+      log(state, t(state, state.settings.lang === "en" ? "log.season.set" : "log.season.set", { weeks: state.settings.seasonWeeks }), "info");
+      save(state);
       render(state);
     },
   });
