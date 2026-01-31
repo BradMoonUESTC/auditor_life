@@ -1,8 +1,9 @@
 import { $ } from "./dom.js?v=57";
 import { escapeHtml } from "./utils.js?v=57";
-import { t } from "./i18n.js?v=57";
 
-export function openModal({ title, body, actions }) {
+export function openModal({ title, body, actions, wide = false }) {
+  const modalEl = $("#modal");
+  if (modalEl) modalEl.classList.toggle("modal--wide", Boolean(wide));
   $("#modalTitle").textContent = title;
   $("#modalBody").innerHTML = body;
   const host = $("#modalActions");
@@ -14,11 +15,13 @@ export function openModal({ title, body, actions }) {
     btn.addEventListener("click", () => a.onClick?.());
     host.appendChild(btn);
   }
-  $("#modal").classList.remove("is-hidden");
+  modalEl?.classList.remove("is-hidden");
 }
 
 export function closeModal() {
-  $("#modal").classList.add("is-hidden");
+  const modalEl = $("#modal");
+  modalEl.classList.add("is-hidden");
+  modalEl.classList.remove("modal--wide");
 }
 
 export function toast(text) {
@@ -29,12 +32,12 @@ export function toast(text) {
     state = text;
     msg = arguments[1];
   }
-  // 自动化期间不弹 toast，避免打断流程/抢焦点
+  // 旧逻辑里“自动化期间不弹 toast”，这里保留兼容（如果未来还有 auto）
   if (state?.settings?.auto?.enabled) return;
   openModal({
-    title: t(state, "modal.toast.title"),
+    title: "提示",
     body: `<div>${escapeHtml(String(msg ?? ""))}</div>`,
-    actions: [{ label: t(state, "modal.toast.ok"), kind: "primary", onClick: closeModal }],
+    actions: [{ label: "知道了", kind: "primary", onClick: closeModal }],
   });
 }
 

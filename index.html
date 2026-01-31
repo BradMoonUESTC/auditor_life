@@ -1,40 +1,47 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title data-i18n="ui.app.title">Web3 Auditor Simulator</title>
-    <meta name="description" content="Web3 Auditor 模拟器：按周推进的数值+文案驱动小游戏（纯前端，无依赖）。" />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%237c5cff'/%3E%3Ctext x='32' y='42' font-size='34' text-anchor='middle'%3E%F0%9F%95%B5%EF%B8%8F%3C/text%3E%3C/svg%3E" />
-    <!-- cache-bust: 防止某些环境下样式被强缓存导致改动不生效 -->
+    <title>Web3 项目开发大亨</title>
+    <meta name="description" content="Web3 项目开发大亨：连续时间推进的经营模拟（纯前端）。" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%237c5cff'/%3E%3Ctext x='32' y='42' font-size='34' text-anchor='middle'%3E%F0%9F%94%A7%3C/text%3E%3C/svg%3E" />
     <link rel="stylesheet" href="./styles.css?v=57" />
   </head>
   <body>
     <header class="topbar">
       <div class="topbar__left">
         <div class="brand">
-          <div class="brand__title" data-i18n="ui.app.title">Web3 Auditor 模拟器</div>
+          <div class="brand__title">Web3 项目开发大亨</div>
           <div class="brand__sub" id="timeLabel">—</div>
         </div>
       </div>
-      <div class="topbar__right">
-        <div class="lang-switch" role="group" aria-label="Language switch" data-i18n-aria-label="ui.langSwitch.aria">
-          <button class="btn btn--ghost btn--pill" data-ui="langEn">EN</button>
-          <button class="btn btn--ghost btn--pill" data-ui="langZh">中文</button>
+      <div class="topbar__center">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center;">
+          <button class="btn btn--primary btn--pill btn--cta" data-ui="createProject">立项</button>
+          <div class="chips" id="topDevScores" style="align-items:center;"></div>
         </div>
-        <button class="btn btn--ghost" data-ui="newGame" data-i18n="ui.top.new">新档</button>
-        <button class="btn btn--ghost" data-ui="saveGame" data-i18n="ui.top.save">保存</button>
-        <button class="btn btn--ghost" data-ui="resetGame" data-i18n="ui.top.reset">重置</button>
-        <button class="btn btn--ghost" data-ui="feedback" data-i18n="ui.top.feedback">反馈</button>
+      </div>
+      <div class="topbar__right">
+        <div class="chips" style="align-items:center;max-width:min(44vw,640px);">
+          <span class="chip chip--warn" id="topProgress">连续时间 · 按周结算</span>
+        </div>
+        <div class="chips" style="align-items:center;">
+          <button class="btn btn--ghost btn--pill" data-menu="inbox">事件</button>
+          <button class="btn btn--ghost btn--pill" data-menu="news">日志</button>
+        </div>
+        <button class="btn btn--ghost" data-ui="newGame">新档</button>
+        <button class="btn btn--ghost" data-ui="saveGame">保存</button>
+        <button class="btn btn--ghost" data-ui="resetGame">重置</button>
       </div>
     </header>
 
     <main class="layout" id="layoutRoot">
       <aside class="panel" id="leftPanel">
         <section class="card">
-          <div class="card__title" data-i18n="ui.card.player">审计师名片</div>
+          <div class="card__title">名片</div>
           <div class="profile">
-            <div class="profile__avatar" aria-hidden="true">🕵️</div>
+            <div class="profile__avatar" aria-hidden="true">🔧</div>
             <div class="profile__meta">
               <div class="profile__name" id="playerName">—</div>
               <div class="profile__desc" id="playerTitle">—</div>
@@ -43,237 +50,117 @@
         </section>
 
         <section class="card">
-          <div class="card__title" data-i18n="ui.stats.header">核心指标</div>
+          <div class="card__title">核心指标</div>
           <div class="stats" id="stats"></div>
         </section>
 
         <section class="card">
-          <div class="card__title" data-i18n="ui.sidebar.ap">本周行动点</div>
+          <div class="card__title">时间推进</div>
           <div class="ap">
             <div class="ap__value">
-              <span id="apNow">0</span><span class="muted">/</span><span id="apMax">0</span>
-            </div>
-            <div class="ap__hint muted" style="margin-top:6px;">
-              <span data-i18n="ui.sidebar.hours">本周工时：</span>
-              <select id="hoursPerDay" class="select" data-i18n-title="ui.hours.title">
-                <option value="6" data-i18n="ui.hours.opt.6">6h/天（躺平）</option>
-                <option value="8" selected data-i18n="ui.hours.opt.8">8h/天（正常）</option>
-                <option value="10" data-i18n="ui.hours.opt.10">10h/天（加班）</option>
-                <option value="12" data-i18n="ui.hours.opt.12">12h/天（爆肝）</option>
-                <option value="14" data-i18n="ui.hours.opt.14">14h/天（重度加班）</option>
-                <option value="16" data-i18n="ui.hours.opt.16">16h/天（高强度）</option>
-                <option value="18" data-i18n="ui.hours.opt.18">18h/天（极高强度）</option>
-                <option value="20" data-i18n="ui.hours.opt.20">20h/天（接近不睡）</option>
-                <option value="22" data-i18n="ui.hours.opt.22">22h/天（几乎不睡，严重损害）</option>
-                <option value="24" data-i18n="ui.hours.opt.24">24h/天（不睡觉，毁灭性损害）</option>
-              </select>
+              <span>连续时间</span> · <span id="timeSpeedLabel">x1</span>
             </div>
             <div class="ap__hint muted" style="margin-top:8px;">
-              <span data-i18n="ui.sidebar.season">赛季长度：</span>
-              <select id="seasonWeeks" class="select" data-i18n-title="ui.season.title">
-                <option value="12" data-i18n="ui.season.opt.12">12 周（速通）</option>
-                <option value="24" data-i18n="ui.season.opt.24">24 周（中速）</option>
-                <option value="36" data-i18n="ui.season.opt.36">36 周（慢热）</option>
-                <option value="52" selected data-i18n="ui.season.opt.52">52 周（默认）</option>
+              <span>速度：</span>
+              <select id="timeSpeed" class="select">
+                <option value="0.5">x0.5</option>
+                <option value="1" selected>x1</option>
+                <option value="2">x2</option>
+                <option value="4">x4</option>
+                <option value="8">x8</option>
               </select>
             </div>
-            <div class="ap__hint muted" data-i18n="ui.sidebar.apHint">行动会消耗行动点；结束本周会触发事件与结算。</div>
-            <button class="btn btn--primary btn--block" data-ui="endWeek" data-i18n="ui.btn.endWeek">结束本周</button>
+            <div class="ap__hint muted" style="margin-top:8px;">时间会连续走动；内部按“周”结算指标与事件。</div>
+            <button class="btn btn--primary btn--block" data-ui="toggleTime">开始</button>
           </div>
         </section>
+
       </aside>
 
       <div class="vsplit" data-split="left" role="separator" aria-orientation="vertical" tabindex="0" title="拖拽调整左侧栏宽度"></div>
 
       <section class="content">
-        <nav class="tabs" role="tablist" aria-label="Main navigation" data-i18n-aria-label="ui.tabs.aria">
-          <button class="tab is-active" data-tab="workbench" role="tab" aria-selected="true" data-i18n="ui.tabs.workbench">工作台</button>
-          <button class="tab" data-tab="orders" role="tab" aria-selected="false" data-i18n="ui.tabs.orders">直客订单</button>
-          <button class="tab" data-tab="platform" role="tab" aria-selected="false" data-i18n="ui.tabs.platform">平台竞赛</button>
-          <button class="tab" data-tab="career" role="tab" aria-selected="false" data-i18n="ui.tabs.career">职业/公司</button>
-          <button class="tab" data-tab="shop" role="tab" aria-selected="false" data-i18n="ui.tabs.shop">商店</button>
-          <button class="tab" data-tab="x" role="tab" aria-selected="false" data-i18n="ui.tabs.x">X 时间线</button>
-          <button class="tab" data-tab="help" role="tab" aria-selected="false" data-i18n="ui.tabs.help">说明</button>
+        <nav class="tabs" role="tablist" aria-label="Main navigation">
+          <button class="tab is-active" data-tab="dashboard" role="tab" aria-selected="true">总览</button>
+          <button class="tab" data-tab="team" role="tab" aria-selected="false">团队</button>
+          <button class="tab" data-tab="research" role="tab" aria-selected="false">研发/引擎</button>
+          <button class="tab" data-tab="ops" role="tab" aria-selected="false">运营</button>
+          <button class="tab" data-tab="help" role="tab" aria-selected="false">说明</button>
         </nav>
 
         <div class="grid">
-          <section class="card card--main" id="tab-workbench" data-tab-panel="workbench" role="tabpanel">
-            <div class="card__title" data-i18n="ui.tabs.workbench">工作台</div>
-            <div class="split">
-              <div>
-                <div class="subhead" data-i18n="ui.workbench.currentTarget">当前目标</div>
-                <div id="activeTarget"></div>
-              </div>
-              <div>
-                <div class="subhead" data-i18n="ui.workbench.quickActions">快捷行动</div>
-                <div class="actions" id="actions"></div>
-              </div>
-            </div>
+          <section class="card card--main" id="tab-dashboard" data-tab-panel="dashboard" role="tabpanel">
+            <div class="card__title">总览</div>
+            <div id="dashboard"></div>
           </section>
 
-          <section class="card card--main is-hidden" id="tab-orders" data-tab-panel="orders" role="tabpanel">
-            <div class="card__title" data-i18n="ui.orders.title">直客订单池</div>
-            <div class="muted" data-i18n="ui.orders.hint">每周刷新一批新订单，你也可以留着慢慢选。</div>
-            <div class="list" id="directMarket"></div>
+          <section class="card card--main is-hidden" id="tab-team" data-tab-panel="team" role="tabpanel">
+            <div class="card__title">团队</div>
+            <div class="muted">岗位对口很关键：产品/设计/机制/合约/运维/安全/增长/合规。</div>
+            <div class="list" id="teamList" style="margin-top:10px;"></div>
             <div class="divider"></div>
-            <div class="subhead" data-i18n="ui.orders.active">进行中的直客项目</div>
-            <div class="list" id="directActive"></div>
+            <div class="subhead">招聘</div>
+            <div class="list" id="hireMarket" style="margin-top:10px;"></div>
           </section>
 
-          <section class="card card--main is-hidden" id="tab-platform" data-tab-panel="platform" role="tabpanel">
-            <div class="card__title" data-i18n="ui.platform.title">平台竞赛池</div>
-            <div class="muted" data-i18n="ui.platform.hint">玩法抽象自 Sherlock / Code4rena / Cantina：时间盒、多方竞争、评审/去重/申诉。</div>
-            <div class="list" id="platformMarket"></div>
-            <div class="divider"></div>
-            <div class="subhead" data-i18n="ui.platform.active">进行中的平台竞赛</div>
-            <div class="list" id="platformActive"></div>
+          <section class="card card--main is-hidden" id="tab-research" data-tab-panel="research" role="tabpanel">
+            <div class="card__title">研发 / 引擎</div>
+            <div id="researchPanel"></div>
           </section>
 
-          <section class="card card--main is-hidden" id="tab-career" data-tab-panel="career" role="tabpanel">
-            <div class="card__title" data-i18n="ui.tabs.career">职业/公司</div>
-            <div class="muted" data-i18n="ui.career.hint">你可以入职公司拿工资，也可以继续直客/平台；但在职外部接单会引入利益冲突与政治成本。</div>
-            <div class="divider"></div>
-
-            <div class="subhead" data-i18n="ui.career.offers">Offer 列表（Job Market）</div>
-            <div class="list" id="jobOffers"></div>
-
-            <div class="divider"></div>
-            <div class="subhead" data-i18n="ui.career.employment">在职状态</div>
-            <div id="employmentCard"></div>
-
-            <div class="divider"></div>
-            <div class="subhead" data-i18n="ui.career.tasks">公司任务（Tickets）</div>
-            <div class="list" id="companyTasks"></div>
-
-            <div class="divider"></div>
-            <div class="subhead" data-i18n="ui.career.major">重大安全事件（抢时效）</div>
-            <div id="majorIncidentPanel"></div>
-          </section>
-
-          <section class="card card--main is-hidden" id="tab-shop" data-tab-panel="shop" role="tabpanel">
-            <div class="card__title" data-i18n="ui.shop.title">商店 / 物品</div>
-            <div class="muted" data-i18n="ui.shop.hint">用现金购买物品获得训练/加成（永久或消耗品）。</div>
-            <div class="list" id="shopList"></div>
-            <div class="divider"></div>
-            <div class="subhead" data-i18n="ui.shop.owned">已拥有</div>
-            <div class="list" id="shopOwned"></div>
-          </section>
-
-          <section class="card card--main is-hidden" id="tab-x" data-tab-panel="x" role="tabpanel">
-            <div class="card__title" data-i18n="ui.x.title">X（推特）时间线 · Web3 Security 梗</div>
-            <div class="muted" data-i18n="ui.x.hint">纯娱乐氛围：每周自动刷几条安全圈梗（不影响数值）。</div>
-            <div class="feed" id="xFeed"></div>
+          <section class="card card--main is-hidden" id="tab-ops" data-tab-panel="ops" role="tabpanel">
+            <div class="card__title">上线后运营</div>
+            <div class="muted">上线后可以持续调参：手续费、回购、排放、激励预算等，并在每周结算里看到 DAU/TVL/收入/利润变化。</div>
+            <div id="opsPanel" style="margin-top:10px;"></div>
           </section>
 
           <section class="card card--main is-hidden" id="tab-help" data-tab-panel="help" role="tabpanel">
-            <div class="card__title" data-i18n="ui.help.title">玩法说明（MVP）</div>
+            <div class="card__title">说明（MVP）</div>
             <div class="prose">
-              <p><b data-i18n="ui.help.goalTitle">目标</b>: <span data-i18n="ui.help.goalBody">在按周推进的节奏里，平衡现金流、声望、精力/心态与合规风险。</span></p>
+              <p><b>核心</b>：像《游戏开发大亨》一样做“项目→阶段配方→发售/上线→反馈循环”，但换成 Web3 产品：用 <b>DAU/留存/TVL/Volume/Fees/利润</b> 做持续结算。</p>
               <ul>
-                <li><b data-i18n="ui.help.directTitle">直客</b>: <span data-i18n="ui.help.directBody">重沟通与报告质量，稳定收款，但容易范围蔓延。</span></li>
-                <li><b data-i18n="ui.help.platformTitle">平台</b>: <span data-i18n="ui.help.platformBody">重速度与深度，奖励受去重/评审影响，能堆平台评级。</span></li>
-                <li><b data-i18n="ui.help.endWeekTitle">结束本周</b>: <span data-i18n="ui.help.endWeekBody">会结算项目进度、触发事件、刷新市场，并恢复少量行动点上限（取决于你的状态）。</span></li>
+                <li><b>三阶段开发</b>：阶段 1（产品/架构）→ 阶段 2（开发实现）→ 阶段 3（上线准备：安全/监控/合规）。</li>
+                <li><b>阶段配方</b>：每阶段的滑条会影响最终评分与指标上限；不同项目类型有不同偏好。</li>
+                <li><b>研发/引擎</b>：攒技术点升级引擎版本，抬高质量上限并降低翻车概率。</li>
+                <li><b>连续时间</b>：时间条持续走动；内部按周结算（不打断，除非弹阶段配置）。</li>
               </ul>
-              <p class="muted"><span data-i18n="ui.help.disclaimer">免责声明：纯属虚构，不构成安全/投资建议；平台机制为玩法抽象。</span></p>
             </div>
           </section>
         </div>
-
       </section>
 
-      <div class="vsplit" data-split="right" role="separator" aria-orientation="vertical" tabindex="0" title="拖拽调整右侧栏宽度"></div>
-
-      <!-- 右侧常驻栏：自动化 + 事件列表 + 新闻动态 -->
-      <aside class="rightbar" id="rightBar">
+      <aside class="panel" id="rightPanel">
         <section class="card">
-          <div class="card__title" data-i18n="ui.auto.title">自动化模式</div>
-          <div class="autoBody">
-          <div class="autoGrid muted">
-            <label class="autoItem autoItem--full">
-              <input type="checkbox" id="autoEnabled" />
-              <span data-i18n="ui.auto.enabled">启用自动化（每 2 秒一步）</span>
-            </label>
-
-            <div class="autoItem autoItem--full">
-              <div class="autoRow">
-                <span data-i18n="ui.auto.focus">偏好：</span>
-                <select id="autoFocus" class="select">
-                  <option value="balanced" data-i18n="ui.auto.focus.balanced">均衡</option>
-                  <option value="survival" data-i18n="ui.auto.focus.survival">生存优先（先休息）</option>
-                  <option value="direct" data-i18n="ui.auto.focus.direct">直客优先</option>
-                  <option value="platform" data-i18n="ui.auto.focus.platform">平台优先</option>
-                  <option value="company" data-i18n="ui.auto.focus.company">公司任务优先</option>
-                  <option value="incident" data-i18n="ui.auto.focus.incident">重大事件优先</option>
-                  <option value="research" data-i18n="ui.auto.focus.research">研究优先</option>
-                </select>
-              </div>
-            </div>
-
-            <label class="autoItem">
-              <input type="checkbox" id="autoEndWeek" />
-              <span data-i18n="ui.auto.autoEndWeek">行动点用完后自动结束本周</span>
-            </label>
-            <label class="autoItem">
-              <input type="checkbox" id="autoAllowAcceptJob" />
-              <span data-i18n="ui.auto.allowAcceptJob">允许自动入职</span>
-            </label>
-            <label class="autoItem">
-              <input type="checkbox" id="autoAllowQuitJob" />
-              <span data-i18n="ui.auto.allowQuitJob">允许自动离职</span>
-            </label>
-
-            <div class="autoItem autoItem--full autoPair">
-              <label class="autoItem">
-                <span data-i18n="ui.auto.minStaminaPct">最低精力阈值(%)</span>
-                <input id="autoMinSta" class="input input--sm" type="number" min="5" max="90" step="1" />
-              </label>
-              <label class="autoItem">
-                <span data-i18n="ui.auto.minMoodPct">最低心态阈值(%)</span>
-                <input id="autoMinMood" class="input input--sm" type="number" min="5" max="90" step="1" />
-              </label>
-            </div>
-          </div>
-          </div>
-        </section>
-
-        <section class="card" id="eventInboxCard">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-            <div class="card__title" data-i18n="ui.inbox.title">事件列表</div>
-            <button class="btn btn--ghost" style="padding:6px 10px;font-size:12px;" data-ui="clearInbox" data-i18n="ui.inbox.clear">清空</button>
-          </div>
-          <div class="muted" data-i18n="ui.inbox.hint">每周会刷新一批“可选事件”（梗/小插曲/行业动态）。点开看看，处理或忽略都行。</div>
-          <div class="list" id="inboxList"></div>
-        </section>
-
-        <section class="card" id="alwaysLog">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-            <div class="card__title" data-i18n="ui.community.title">新闻动态</div>
-            <button class="btn btn--ghost" style="padding:6px 10px;font-size:12px;" data-ui="clearLog" data-i18n="ui.log.clear">清空</button>
-          </div>
-          <div class="muted" data-i18n="ui.community.hint">所有行动与事件都会记录在这里（可当朋友圈/时间线）。</div>
-          <div class="muted" style="margin-top:4px;" data-i18n="ui.log.langNote">提示：动态是历史记录，不会在切换语言时自动翻译旧内容。</div>
-          <div class="feed" id="log"></div>
-        </section>
-      </aside>
-
-      <div class="vsplit" data-split="lb" role="separator" aria-orientation="vertical" tabindex="0" title="拖拽调整排行榜宽度"></div>
-
-      <!-- 最右侧单独一栏：排行榜（避免挡住新闻动态） -->
-      <aside class="lbbar" id="lbBar">
-        <section class="card" id="leaderboardsCard">
-          <div class="card__title" data-i18n="ui.lb.title">排行榜</div>
-          <div class="muted" data-i18n="ui.lb.hint">同行也在刷钱/刷 finding：每周滚动更新（尽量贴近你的增速）。</div>
-          <div style="margin-top:8px;">
-            <div class="muted" style="font-weight:600;margin-bottom:6px;" data-i18n="ui.lb.earn">赚钱榜</div>
-            <div id="lbEarn"></div>
-          </div>
-          <div style="margin-top:10px;">
-            <div class="muted" style="font-weight:600;margin-bottom:6px;" data-i18n="ui.lb.find">Finding 榜</div>
-            <div id="lbFind"></div>
-          </div>
+          <div class="card__title">运营（常驻）</div>
+          <div class="muted">任意页面可调参；按“天”结算更直观。</div>
+          <div id="opsPanelFixed" style="margin-top:10px;"></div>
         </section>
       </aside>
     </main>
+
+    <div class="menuOverlay is-hidden" id="menuOverlay" aria-hidden="true">
+      <div class="menuOverlay__backdrop" data-ui="closeMenus" aria-hidden="true"></div>
+      <div class="menuPanel is-hidden" id="menu-inbox" role="dialog" aria-label="事件">
+        <section class="card">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+            <div class="card__title">事件</div>
+            <button class="btn btn--ghost" style="padding:6px 10px;font-size:12px;" data-ui="closeMenus">关闭</button>
+          </div>
+          <div class="muted">每周会刷出 0~2 条可选事件：不处理也不会卡流程，但会错过机会（或少一次止损）。</div>
+          <div class="list" id="inbox" style="margin-top:10px;"></div>
+        </section>
+      </div>
+      <div class="menuPanel is-hidden" id="menu-news" role="dialog" aria-label="日志">
+        <section class="card">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+            <div class="card__title">日志</div>
+            <button class="btn btn--ghost" style="padding:6px 10px;font-size:12px;" data-ui="clearLog">清空</button>
+          </div>
+          <div class="muted">每周结算、立项、研发、上线都会记录在这里。</div>
+          <div class="feed" id="log" style="margin-top:10px;"></div>
+        </section>
+      </div>
+    </div>
 
     <div class="modal is-hidden" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <div class="modal__backdrop" data-ui="closeModal"></div>
@@ -284,7 +171,6 @@
       </div>
     </div>
 
-    <!-- cache-bust: 防止浏览器缓存旧的 JS 模块导致功能更新不生效 -->
     <script type="module" src="./src/main.js?v=57"></script>
   </body>
 </html>

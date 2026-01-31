@@ -1,0 +1,23 @@
+{
+  "name": "auditor_life",
+  "version": "1.0.0",
+  "description": "这是一个**纯前端（无依赖）**的数值+文案驱动小游戏：你扮演 Web3 审计师，按周推进，接直客项目或参加审计平台竞赛（Sherlock/Code4rena/Cantina 的玩法抽象），分配行动点、处理事件、攒声望与现金流，避免爆雷与合规翻车。",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BradMoonUESTC/auditor_life.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/BradMoonUESTC/auditor_life/issues"
+  },
+  "homepage": "https://github.com/BradMoonUESTC/auditor_life#readme",
+  "devDependencies": {
+    "playwright": "^1.58.1"
+  }
+}

@@ -1,4 +1,4 @@
-const STORAGE_KEY = "web3_auditor_sim_v1";
+const STORAGE_KEY = "web3_dev_tycoon_v1";
 
 export function save(state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));

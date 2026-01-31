@@ -1,10 +1,7 @@
 import { $, $$ } from "./dom.js?v=57";
 import { clamp, escapeHtml, money } from "./utils.js?v=57";
-import { save } from "./storage.js?v=57";
-import { healthCap, normalizeState, refreshAP, weekLabel } from "./state.js?v=57";
-import { actionCost, ensureSelection, findTarget, itemCount, protocolLabel } from "./logic.js?v=57";
-import { SHOP_ITEMS } from "./content.js?v=57";
-import { applyI18nDom, t as tr } from "./i18n.js?v=57";
+import { normalizeState, weekLabel } from "./state.js?v=57";
+import { ARCHETYPES, AUDIENCES, CHAINS, INBOX_DEFS, NARRATIVES, PLATFORMS, RESEARCH_TREE, ensureSelection, estimateDailyCashDelta, findTarget, projectProductScore10, projectStage, projectTechScore10, researchNodeStatus } from "./logic.js?v=57";
 
 export function switchTab(tabKey) {
   for (const btn of $$(".tab")) {
@@ -18,710 +15,669 @@ export function switchTab(tabKey) {
   }
 }
 
-// ===== resizable layout (drag splitters) =====
-const LAYOUT_STORAGE_KEY = "auditor_layout_cols_v1";
-
-function parsePx(v, fallback) {
-  if (typeof v !== "string") return fallback;
-  const n = parseFloat(v.replace("px", "").trim());
-  return Number.isFinite(n) ? n : fallback;
+function labelOf(list, key) {
+  return (list.find((x) => x.key === key) || { name: key }).name;
 }
 
-function clampRange(n, min, max) {
-  if (!Number.isFinite(n)) return min;
-  return Math.max(min, Math.min(max, n));
-}
-
-function loadLayoutCols() {
-  try {
-    const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
-    if (!raw) return null;
-    const obj = JSON.parse(raw);
-    if (!obj || typeof obj !== "object") return null;
-    return obj;
-  } catch {
-    return null;
-  }
-}
-
-function saveLayoutCols(cols) {
-  try {
-    localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(cols));
-  } catch {
-    // ignore
-  }
-}
-
-export function initResizableLayout() {
-  const layout = document.getElementById("layoutRoot") || document.querySelector(".layout");
-  if (!layout) return;
-  if (layout.dataset.resizeInit === "1") return;
-  layout.dataset.resizeInit = "1";
-
-  const cs = getComputedStyle(layout);
-  const splitW = parsePx(cs.getPropertyValue("--split"), 8);
-
-  // Restore saved widths (if any)
-  const saved = loadLayoutCols();
-  if (saved) {
-    if (typeof saved.left === "number") layout.style.setProperty("--col-left", `${Math.round(saved.left)}px`);
-    if (typeof saved.right === "number") layout.style.setProperty("--col-right", `${Math.round(saved.right)}px`);
-    if (typeof saved.lb === "number") layout.style.setProperty("--col-lb", `${Math.round(saved.lb)}px`);
-  }
-
-  /** recompute clamps based on current window */
-  const getNums = () => {
-    const c = getComputedStyle(layout);
-    const left = parsePx(c.getPropertyValue("--col-left"), 420);
-    const right = parsePx(c.getPropertyValue("--col-right"), 360);
-    const lb = parsePx(c.getPropertyValue("--col-lb"), 300);
-    const split = parsePx(c.getPropertyValue("--split"), splitW);
-    return { left, right, lb, split };
-  };
-
-  const minLeft = 320;
-  const minRight = 280;
-  const minLb = 240;
-  const minContent = 520;
-
-  /** @type {null | {kind:'left'|'right'|'lb', startX:number}} */
-  let dragging = null;
-
-  const applyAndPersist = () => {
-    const { left, right, lb } = getNums();
-    saveLayoutCols({ left, right, lb });
-  };
-
-  const onMove = (ev) => {
-    if (!dragging) return;
-    const r = layout.getBoundingClientRect();
-    const x = ev.clientX;
-    const { left, right, lb, split } = getNums();
-
-    // Available max for left/right/lb while keeping content >= minContent
-    const total = r.width;
-    const maxLeft = total - minContent - right - lb - split * 3;
-    const maxRight = total - minContent - left - lb - split * 3;
-    const maxLb = total - minContent - left - right - split * 3;
-
-    if (dragging.kind === "left") {
-      const newLeft = clampRange(x - r.left, minLeft, Math.max(minLeft, maxLeft));
-      layout.style.setProperty("--col-left", `${Math.round(newLeft)}px`);
-      return;
-    }
-    if (dragging.kind === "right") {
-      // rightbar width = right edge - splitterX - split*2 - lb
-      const newRightRaw = r.right - x - split * 2 - lb;
-      const newRight = clampRange(newRightRaw, minRight, Math.max(minRight, maxRight));
-      layout.style.setProperty("--col-right", `${Math.round(newRight)}px`);
-      return;
-    }
-    if (dragging.kind === "lb") {
-      // lb width = right edge - splitterX - split
-      const newLbRaw = r.right - x - split;
-      const newLb = clampRange(newLbRaw, minLb, Math.max(minLb, maxLb));
-      layout.style.setProperty("--col-lb", `${Math.round(newLb)}px`);
-    }
-  };
-
-  const stop = () => {
-    if (!dragging) return;
-    dragging = null;
-    document.body.style.cursor = "";
-    for (const el of document.querySelectorAll(".vsplit.is-dragging")) el.classList.remove("is-dragging");
-    window.removeEventListener("pointermove", onMove);
-    window.removeEventListener("pointerup", stop);
-    applyAndPersist();
-  };
-
-  const start = (kind, ev) => {
-    // mobile layout: do nothing
-    if (window.matchMedia("(max-width: 980px)").matches) return;
-    dragging = { kind, startX: ev.clientX };
-    document.body.style.cursor = "col-resize";
-    ev.currentTarget?.classList?.add("is-dragging");
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", stop);
-  };
-
-  for (const el of document.querySelectorAll(".vsplit[data-split]")) {
-    const kind = el.getAttribute("data-split");
-    if (kind !== "left" && kind !== "right" && kind !== "lb") continue;
-    el.addEventListener("pointerdown", (ev) => {
-      // @ts-ignore
-      if (ev.button != null && ev.button !== 0) return;
-      el.setPointerCapture?.(ev.pointerId);
-      start(kind, ev);
-    });
-    el.addEventListener("dblclick", () => {
-      // reset to css defaults
-      layout.style.removeProperty("--col-left");
-      layout.style.removeProperty("--col-right");
-      layout.style.removeProperty("--col-lb");
-      saveLayoutCols({}); // clear
-    });
-  }
-
-  // keep values sane on resize
-  window.addEventListener("resize", () => {
-    const r = layout.getBoundingClientRect();
-    const { left, right, lb, split } = getNums();
-    const total = r.width;
-    const maxLeft = Math.max(minLeft, total - minContent - right - lb - split * 3);
-    const maxRight = Math.max(minRight, total - minContent - left - lb - split * 3);
-    const maxLb = Math.max(minLb, total - minContent - left - right - split * 3);
-    const cl = clampRange(left, minLeft, maxLeft);
-    const cr = clampRange(right, minRight, maxRight);
-    const cb = clampRange(lb, minLb, maxLb);
-    layout.style.setProperty("--col-left", `${Math.round(cl)}px`);
-    layout.style.setProperty("--col-right", `${Math.round(cr)}px`);
-    layout.style.setProperty("--col-lb", `${Math.round(cb)}px`);
-  });
-}
-
-function statBar(n) {
-  const v = clamp(Math.round(n), 0, 100);
-  return `<div class="bar"><i style="width:${v}%"></i></div>`;
-}
-
-export function render(state) {
-  normalizeState(state);
-  applyI18nDom(state);
-  $("#timeLabel").textContent = weekLabel(state);
-  $("#playerName").textContent = state.player.name;
-  $("#playerTitle").textContent = state.player.title;
-
-  refreshAP(state);
-  $("#apNow").textContent = String(state.ap.now);
-  $("#apMax").textContent = String(state.ap.max);
-
-  const sel = $("#hoursPerDay");
-  if (sel) {
-    const lockedByWork = state.ap.now < state.ap.max;
-    sel.value = String(clamp(Math.round(state.schedule?.hoursPerDay ?? 8), 6, 24));
-    sel.disabled = Boolean(state.flags.gameOver) || lockedByWork;
-    sel.title = lockedByWork ? tr(state, "ui.hours.locked") : tr(state, "ui.hours.title");
-  }
-
-  const seasonSel = $("#seasonWeeks");
-  if (seasonSel) {
-    const sw = clamp(Math.round(state.settings?.seasonWeeks ?? 52), 8, 5200);
-    seasonSel.value = String([12, 24, 36, 52].includes(sw) ? sw : 52);
-    seasonSel.disabled = Boolean(state.flags.gameOver);
-    seasonSel.title = tr(state, "ui.season.title");
-  }
-
-  // Topbar language buttons
-  const isEn = state.settings?.lang === "en";
-  const btnEn = document.querySelector('[data-ui="langEn"]');
-  const btnZh = document.querySelector('[data-ui="langZh"]');
-  if (btnEn) btnEn.classList.toggle("btn--primary", isEn);
-  if (btnZh) btnZh.classList.toggle("btn--primary", !isEn);
-  if (btnEn) btnEn.disabled = Boolean(state.flags.gameOver);
-  if (btnZh) btnZh.disabled = Boolean(state.flags.gameOver);
-
-  // Automation controls
-  const auto = state.settings?.auto;
-  const ae = $("#autoEnabled");
-  if (ae) ae.checked = Boolean(auto?.enabled);
-  const af = $("#autoFocus");
-  if (af) af.value = auto?.focus || "balanced";
-  const aew = $("#autoEndWeek");
-  if (aew) aew.checked = Boolean(auto?.autoEndWeek);
-  const aaj = $("#autoAllowAcceptJob");
-  if (aaj) aaj.checked = Boolean(auto?.allowAcceptJob);
-  const aqj = $("#autoAllowQuitJob");
-  if (aqj) aqj.checked = Boolean(auto?.allowQuitJob);
-  const minSta = $("#autoMinSta");
-  if (minSta) minSta.value = String(auto?.minStaminaPct ?? 35);
-  const minMood = $("#autoMinMood");
-  if (minMood) minMood.value = String(auto?.minMoodPct ?? 30);
-
-  renderStats(state);
-  renderActions(state);
-  renderTargets(state);
-  renderMarket(state);
-  renderCareer(state);
-  renderShop(state);
-  renderInbox(state);
-  renderLog(state);
-  renderLeaderboards(state);
-  renderXFeed(state);
-
-  save(state);
-}
-
-function renderInbox(state) {
-  const wrap = document.getElementById("inboxList");
-  if (!wrap) return;
-  const items = state.inbox?.items || [];
-  if (!items.length) {
-    wrap.innerHTML = `<div class="muted" style="padding:8px 0;" data-i18n="ui.inbox.empty">${escapeHtml(
-      tr(state, "ui.inbox.empty")
-    )}</div>`;
-    return;
-  }
-  wrap.innerHTML = items
-    .slice(0, 20)
-    .map((it) => {
-      const vars = it.payload || {};
-      const title = tr(state, `inbox.${it.def}.title`, vars);
-      const defKey = String(it.def);
-      const kind =
-        defKey.startsWith("sec_")
-          ? "security"
-          : defKey.startsWith("market_")
-            ? "market"
-            : defKey.startsWith("social_") || defKey.startsWith("xdrama_")
-              ? "social"
-              : "meme";
-      const chip = tr(state, `ui.inbox.kind.${kind}`);
-      return `
-      <div class="item" style="display:flex;gap:10px;align-items:flex-start;justify-content:space-between;">
-        <div style="min-width:0;">
-          <div style="display:flex;gap:6px;align-items:center;">
-            <span class="chip">${escapeHtml(chip)}</span>
-            <div class="item__title" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(title)}</div>
-          </div>
-        </div>
-        <div style="display:flex;gap:6px;flex:0 0 auto;">
-          <button class="btn btn--ghost" style="padding:6px 10px;font-size:12px;" data-inbox="open:${it.id}">${escapeHtml(
-            tr(state, "ui.inbox.open")
-          )}</button>
-          <button class="btn btn--ghost" style="padding:6px 10px;font-size:12px;" data-inbox="ignore:${it.id}">${escapeHtml(
-            tr(state, "ui.inbox.ignore")
-          )}</button>
-        </div>
-      </div>`;
-    })
-    .join("");
+function chip(text, tone = "") {
+  const cls = tone ? `chip chip--${tone}` : "chip";
+  return `<span class="${cls}">${escapeHtml(text)}</span>`;
 }
 
 function renderStats(state) {
-  const s = state.stats;
-  const hcap = healthCap(state);
-  const items = [
-    [tr(state, "stat.stamina"), s.stamina],
-    [tr(state, "stat.mood"), s.mood],
-    [tr(state, "stat.skill"), s.skill],
-    [tr(state, "stat.tooling"), s.tooling],
-    [tr(state, "stat.writing"), s.writing],
-    [tr(state, "stat.comms"), s.comms],
-    [tr(state, "stat.reputation"), s.reputation],
-    [tr(state, "stat.brand"), s.brand],
-    [tr(state, "stat.platformRating"), s.platformRating],
-    [tr(state, "stat.compliance"), s.compliance],
+  const r = state.resources;
+  const host = document.getElementById("stats");
+  if (!host) return;
+  const delta = estimateDailyCashDelta(state);
+  const sign = delta.net >= 0 ? "+" : "-";
+  const netAbs = Math.abs(delta.net);
+  const netText = `${sign}${money(netAbs)}/天`;
+  const parts = [];
+  if (delta.salaryDaily > 0) parts.push(`工资 -${money(delta.salaryDaily)}/天`);
+  if (delta.livingCostDaily > 0) parts.push(`杂费 -${money(delta.livingCostDaily)}/天`);
+  const burnText = parts.length ? `（${parts.join("，")}）` : "";
+  const rows = [
+    ["现金", money(r.cash)],
+    ["预计每日现金变化", `${netText} ${burnText}`.trim()],
+    ["声誉", `${r.reputation}/100`],
+    ["社区", `${r.community}/100`],
+    ["技术点", String(r.techPoints)],
+    ["粉丝", `${Math.round(r.fans || 0).toLocaleString("zh-CN")}`],
+    ["人脉", `${r.network}/100`],
+    ["安全风险", `${r.securityRisk}/100`],
+    ["合规风险", `${r.complianceRisk}/100`],
   ];
-
-  $("#stats").innerHTML =
-    items
-      .map(([label, val]) => {
-        const cap = label === tr(state, "stat.stamina") || label === tr(state, "stat.mood") ? hcap : 100;
-        const pct = clamp(Math.round((val / cap) * 100), 0, 100);
-        return `
-          <div class="stat">
-            <div class="stat__row">
-              <div class="stat__label">${escapeHtml(label)}</div>
-              <div class="stat__value">${val}/${cap}</div>
-            </div>
-            <div class="bar"><i style="width:${pct}%"></i></div>
-          </div>`;
-      })
-      .join("") +
-    `
-      <div class="divider"></div>
-      <div class="kvs">
-        <div class="kv"><div class="kv__k">${escapeHtml(tr(state, "stat.cash"))}</div><div class="kv__v">${money(s.cash)}</div></div>
-        <div class="kv"><div class="kv__k">${escapeHtml(tr(state, "stat.network"))}</div><div class="kv__v">${s.network}/100</div></div>
-      </div>
-    `;
+  host.innerHTML = `<div class="kvs">${rows
+    .map(([k, v]) => `<div class="kv"><div class="kv__k">${escapeHtml(k)}</div><div class="kv__v">${escapeHtml(v)}</div></div>`)
+    .join("")}</div>`;
 }
 
-function renderActions(state) {
-  const isOver = Boolean(state.flags.gameOver);
-  ensureSelection(state);
-  const target = state.selectedTarget ? findTarget(state, state.selectedTarget.kind, state.selectedTarget.id) : null;
-  const employed = Boolean(state.employment?.employed);
-  const hasMI = Boolean(state.majorIncident?.active);
+function renderTopbar(state) {
+  const timeLabel = document.getElementById("timeLabel");
+  if (timeLabel) timeLabel.textContent = weekLabel(state);
+  const pn = document.getElementById("playerName");
+  if (pn) pn.textContent = state.player?.name || "—";
+  const pt = document.getElementById("playerTitle");
+  if (pt) pt.textContent = state.player?.title || "—";
 
-  const actions = [
-    { key: "audit", label: tr(state, "action.audit.label"), hint: tr(state, "action.audit.hint") },
-    { key: "model", label: tr(state, "action.model.label"), hint: tr(state, "action.model.hint") },
-    { key: "write", label: tr(state, "action.write.label"), hint: tr(state, "action.write.hint") },
-    { key: "retest", label: tr(state, "action.retest.label"), hint: tr(state, "action.retest.hint") },
-    { key: "comms", label: tr(state, "action.comms.label"), hint: tr(state, "action.comms.hint") },
-    { key: "submit", label: tr(state, "action.submit.label"), hint: tr(state, "action.submit.hint") },
-    { key: "companyWork", label: tr(state, "action.companyWork.label"), hint: tr(state, "action.companyWork.hint") },
-    { key: "meeting", label: tr(state, "action.meeting.label"), hint: tr(state, "action.meeting.hint") },
-    { key: "aiResearch", label: tr(state, "action.aiResearch.label"), hint: tr(state, "action.aiResearch.hint") },
-    { key: "productizeAI", label: tr(state, "action.productizeAI.label"), hint: tr(state, "action.productizeAI.hint") },
-    { key: "incidentAnalysis", label: tr(state, "action.incidentAnalysis.label"), hint: tr(state, "action.incidentAnalysis.hint") },
-    { key: "fundTrace", label: tr(state, "action.fundTrace.label"), hint: tr(state, "action.fundTrace.hint") },
-    { key: "writeBrief", label: tr(state, "action.writeBrief.label"), hint: tr(state, "action.writeBrief.hint") },
-    { key: "postX", label: tr(state, "action.postX.label"), hint: tr(state, "action.postX.hint") },
-    { key: "blog", label: tr(state, "action.blog.label"), hint: tr(state, "action.blog.hint") },
-    { key: "tweet", label: tr(state, "action.tweet.label"), hint: tr(state, "action.tweet.hint") },
-    { key: "learn", label: tr(state, "action.learn.label"), hint: tr(state, "action.learn.hint") },
-    { key: "rest", label: tr(state, "action.rest.label"), hint: tr(state, "action.rest.hint") },
-    { key: "compliance", label: tr(state, "action.compliance.label"), hint: tr(state, "action.compliance.hint") },
-  ].map((a) => ({ ...a, cost: actionCost(state, a.key, target) }));
+  // Dev scores next to "立项" (GDT-like)
+  const scoreHost = document.getElementById("topDevScores");
+  if (scoreHost) {
+    ensureSelection(state);
+    const sel = state.selectedTarget;
+    const p = sel && sel.kind === "project" ? findTarget(state, "project", sel.id) : null;
+    if (p) {
+      const idx = clamp(Math.round(p.stageIndex || 0), 0, 2);
+      const pct = clamp(Number(p.stageProgress) || 0, 0, 100);
+      const progress01 = clamp((idx + pct / 100) / 3, 0, 1);
+      const ease = Math.pow(progress01, 0.65);
+      const baseStart = 2 + clamp((Number(p.scale) || 1) - 1, 0, 2) * 0.4;
+      const targetP = projectProductScore10(p, state);
+      const targetT = projectTechScore10(p, state);
+      const curP = clamp(Math.round(baseStart + (targetP - baseStart) * ease), 1, 10);
+      const curT = clamp(Math.round(baseStart + (targetT - baseStart) * ease), 1, 10);
+      scoreHost.innerHTML = `${chip(`产品分 ${curP}/10`)}${chip(`技术分 ${curT}/10`)}`;
+    } else {
+      scoreHost.innerHTML = "";
+    }
+  }
 
-  $("#actions").innerHTML = actions
-    .map((a) => {
-      let disabled = isOver || state.ap.now < a.cost;
-      if (a.key === "companyWork" || a.key === "meeting") disabled = disabled || !employed;
-      if (a.key === "companyWork") disabled = disabled || !(target && target.kind === "company");
-      if (a.key === "incidentAnalysis" || a.key === "fundTrace" || a.key === "writeBrief" || a.key === "postX") disabled = disabled || !hasMI;
-      if (a.key === "productizeAI") disabled = disabled || !employed;
-      return `
-        <button class="btn" data-action="${a.key}" ${disabled ? "disabled" : ""} title="${escapeHtml(a.hint)}">
-          ${escapeHtml(a.label)} <span class="muted">(-${a.cost})</span>
-        </button>`;
-    })
-    .join("");
+  const speedLabel = document.getElementById("timeSpeedLabel");
+  if (speedLabel) speedLabel.textContent = `x${state.time?.speed ?? 1}`;
+  const toggleBtn = document.querySelector('[data-ui="toggleTime"]');
+  if (toggleBtn) toggleBtn.textContent = state.time?.paused ? "开始" : "暂停";
+
+  const timeSpeed = document.getElementById("timeSpeed");
+  if (timeSpeed) timeSpeed.value = String(state.time?.speed ?? 1);
 }
 
-function renderTargets(state) {
+function applyLayout(state) {
+  const w = clamp(Math.round(state.settings?.layout?.colLeft ?? 420), 260, 560);
+  document.documentElement.style.setProperty("--col-left", `${w}px`);
+}
+
+function renderDashboard(state) {
+  const host = document.getElementById("dashboard");
+  if (!host) return;
   ensureSelection(state);
   const sel = state.selectedTarget;
-  const d = state.active.direct;
-  const p = state.active.platform;
-  const c = state.active.company || [];
+  const target = sel ? findTarget(state, sel.kind, sel.id) : null;
 
-  const displayTitle = (proj) => {
-    if (proj?.kind === "company") {
-      const tt = proj.ticketType;
-      const scope = proj.scope ?? 0;
-      if (tt) return tr(state, "project.company.title", { type: tr(state, `company.ticketType.${tt}`), scope });
-    }
-    return proj?.title || "";
-  };
+  const active = state.active.projects || [];
+  const live = state.active.products || [];
 
-  const card = (proj) => {
-    const chips = [];
-    chips.push(
-      `<span class="chip">${escapeHtml(
-        proj.kind === "direct" ? tr(state, "chip.direct") : proj.kind === "platform" ? tr(state, "chip.platform") : tr(state, "chip.company")
-      )}</span>`
-    );
-    chips.push(`<span class="chip">${escapeHtml(protocolLabel(state, proj.protocol))}</span>`);
-    chips.push(`<span class="chip">${proj.deadlineWeeks} ${escapeHtml(tr(state, "ui.unit.week"))}</span>`);
-    chips.push(
-      `<span class="chip">${proj.kind === "direct" ? money(proj.fee) : proj.kind === "platform" ? money(proj.prizePool) : escapeHtml(tr(state, "ui.career.kpi"))}</span>`
-    );
-
-    let line = "";
-    if (proj.kind === "direct") {
-      const fixRate = clamp(proj.fixRate ?? 50, 0, 100);
-      const shipUrgency = clamp(proj.shipUrgency ?? 50, 0, 100);
-      const retestScore = clamp(proj.retestScore ?? 0, 0, 100);
-      line = `${tr(state, "ui.project.coverage")}${proj.coverage}% ｜ ${tr(state, "ui.project.report")}${clamp(
-        proj.report?.draft ?? 0,
-        0,
-        100
-      )}% ｜ ${tr(state, "ui.project.fixRate")}${fixRate}% ｜ ${tr(state, "ui.project.shipUrgency")}${shipUrgency}% ｜ ${tr(state, "ui.project.retest")}${retestScore}%`;
-    } else if (proj.kind === "platform") {
-      const drafts = proj.submissions.filter((x) => x.status === "draft");
-      const submitted = proj.submissions.filter((x) => x.status === "submitted");
-      const submittedPts = submitted.reduce((a, x) => a + x.points, 0);
-      const evidence = clamp(proj.evidence ?? 0, 0, 100);
-      line = `${tr(state, "ui.project.coverage")}${proj.coverage}% ｜ ${tr(state, "ui.project.draft")}${drafts.length} ${tr(
-        state,
-        "ui.unit.entry"
-      )} ｜ ${tr(state, "ui.project.submitted")}${submitted.length} ${tr(state, "ui.unit.entry")}（${submittedPts} ${tr(
-        state,
-        "ui.unit.point"
-      )}）｜ ${tr(state, "ui.project.evidence")}${evidence}%`;
-    } else {
-      line = `${tr(state, "ui.project.progress")}${clamp(proj.progress ?? 0, 0, 100)}% ｜ ${tr(state, "ui.project.impact")}${clamp(
-        proj.impact ?? 50,
-        0,
-        100
-      )}/100 ｜ ${tr(state, "ui.project.risk")}${clamp(proj.risk ?? 50, 0, 100)}/100`;
-    }
-
-    return `
-        <div class="item">
-          <div class="item__top">
-            <div>
-              <div class="item__title">${escapeHtml(displayTitle(proj))}</div>
-              <div class="muted" style="margin-top:6px;">${escapeHtml(line)}</div>
-            </div>
-            <div class="chips">${chips.join("")}</div>
-          </div>
-          <div class="item__actions">
-            <button class="btn" data-select="${proj.kind}:${proj.id}">${escapeHtml(tr(state, "ui.common.setAsTarget"))}</button>
+  const projectLine = (p) => {
+    const stg = projectStage(p);
+    const pct = clamp(Math.round(p.stageProgress || 0), 0, 100);
+    const paused = p.stagePaused ? "（待配置）" : "";
+    return `<div class="item">
+      <div class="item__top">
+        <div>
+          <div class="item__title">${escapeHtml(p.title)}</div>
+          <div class="muted" style="margin-top:6px;">
+            ${escapeHtml(labelOf(ARCHETYPES, p.archetype))} · ${escapeHtml(labelOf(CHAINS, p.chain))} · ${escapeHtml(labelOf(NARRATIVES, p.narrative))}
           </div>
         </div>
-      `;
+        <div class="chips">
+          ${chip(stg)}${chip(`${pct}%`, p.stagePaused ? "warn" : "good")}${chip(`预算 ${money(p.budget)}`)}
+        </div>
+      </div>
+      <div class="item__actions">
+        <button class="btn" data-select="project:${p.id}">设为当前</button>
+        <button class="btn btn--ghost" data-stage="project:${p.id}">阶段配置</button>
+        <button class="btn btn--ghost" data-abandon="project:${p.id}">废弃</button>
+      </div>
+    </div>`;
   };
 
-  let html = "";
-  if (!d.length && !p.length && !c.length) {
-    html = `<div class="muted">${escapeHtml(tr(state, "ui.workbench.noTargets"))}</div>`;
-  } else {
-    html += `<div class="list">`;
-    for (const x of d) html += card(x);
-    for (const x of p) html += card(x);
-    for (const x of c) html += card(x);
-    html += `</div>`;
-  }
+  const productLine = (p) => {
+    const k = p.kpi || {};
+    const s = p.scores || {};
+    const known = Boolean(p?.archetype && Array.isArray(state.knowledge?.zenaKnownArchetypes) && state.knowledge.zenaKnownArchetypes.includes(String(p.archetype)));
+    const quality10 = clamp(Math.round(1 + clamp(Math.round(s.match || 0), 0, 100) / 100 * 9), 1, 10);
+    return `<div class="item">
+      <div class="item__top">
+        <div>
+          <div class="item__title">${escapeHtml(p.title)}</div>
+          <div class="muted" style="margin-top:6px;">
+            DAU ${Math.round(k.dau || 0).toLocaleString("zh-CN")} · TVL ${Math.round(k.tvl || 0).toLocaleString("zh-CN")} · 周利润 ${money(k.profit || 0)}
+          </div>
+        </div>
+        <div class="chips">
+          ${chip(`安全 ${s.security}`)}${chip(`增长 ${s.growth}`)}${known ? chip(`质量 ${quality10}/10`) : chip("质量 未知", "warn")}
+        </div>
+      </div>
+      <div class="item__actions">
+        <button class="btn" data-select="product:${p.id}">设为当前</button>
+        <button class="btn btn--ghost" data-postmortem="${escapeHtml(p.id)}">复盘</button>
+      </div>
+    </div>`;
+  };
 
-  if (sel) {
-    const target = findTarget(state, sel.kind, sel.id);
-    if (target) html = `<div class="muted" style="margin-bottom:10px;">${escapeHtml(tr(state, "ui.workbench.currentPick", { title: displayTitle(target) }))}</div>` + html;
-  }
-
-  $("#activeTarget").innerHTML = html;
-}
-
-function renderCareer(state) {
-  // Job offers
-  const offersHost = $("#jobOffers");
-  if (offersHost) {
-    const offers = state.market.jobs || [];
-    offersHost.innerHTML =
-      offers.length === 0
-        ? `<div class="muted">${escapeHtml(tr(state, "ui.career.offers.empty"))}</div>`
-        : offers
-            .map((o) => {
-              const cls = o.companyType === "exchange" ? "chip chip--warn" : "chip chip--good";
-              const typeText = o.companyType === "exchange" ? tr(state, "chip.exchange") : tr(state, "chip.sec");
-              const wm = o.workMode === "onsite" ? tr(state, "ui.workMode.onsite") : tr(state, "ui.workMode.remote");
-              return `<div class="item">
-                <div class="item__top">
-                  <div>
-                    <div class="item__title">${escapeHtml(o.companyName)} · ${escapeHtml(o.title)}</div>
-              <div class="muted" style="margin-top:6px;">${escapeHtml(tr(state, "ui.career.salary"))}：${money(o.salaryWeekly)} ｜ ${escapeHtml(tr(state, "ui.career.level"))}：L${o.levelOffer} ｜ ${escapeHtml(tr(state, "ui.career.workMode"))}：${escapeHtml(wm)} ｜ ${escapeHtml(tr(state, "ui.career.complianceStrict"))}：${o.complianceStrict}/100</div>
-                  </div>
-                  <div class="chips"><span class="${cls}">${escapeHtml(typeText)}</span></div>
-                </div>
-                <div class="item__body">${escapeHtml(o.notes || "")}</div>
-                <div class="item__actions">
-                  <button class="btn btn--primary" data-career="acceptJob:${o.id}">${escapeHtml(tr(state, "ui.career.btn.accept"))}</button>
-                </div>
-              </div>`;
-            })
-            .join("");
-  }
-
-  // Employment card
-  const empHost = $("#employmentCard");
-  if (empHost) {
-    const e = state.employment;
-    if (!e?.employed) {
-      empHost.innerHTML = `<div class="muted">${escapeHtml(tr(state, "ui.career.employment.none"))}</div>`;
-    } else {
-      const cls = e.companyType === "exchange" ? "chip chip--warn" : "chip chip--good";
-      const typeText = e.companyType === "exchange" ? tr(state, "chip.exchange") : tr(state, "chip.sec");
-      const wm = e.workMode === "onsite" ? tr(state, "ui.workMode.onsite") : tr(state, "ui.workMode.remote");
-      const rep = clamp(state.stats.reputation ?? 0, 0, 100);
-      const plat = clamp(state.stats.platformRating ?? 0, 0, 100);
-      const promoTarget = 10;
-      const bonus = clamp((rep + plat) / 120, 0, 1);
-      const promoGain = clamp(1 + bonus, 1, 2);
-      const promoNow = clamp(e.promoProgress ?? 0, 0, 999);
-      empHost.innerHTML = `<div class="item">
+  const done = Array.isArray(state.history?.projectsDone) ? state.history.projectsDone.slice(0, 12) : [];
+  const doneLine = (d) => {
+    const pf = (PLATFORMS || []).find((x) => x.key === d.platform)?.name || d.platform || "—";
+    const meta = `${escapeHtml(labelOf(ARCHETYPES, d.archetype))} · ${escapeHtml(labelOf(NARRATIVES, d.narrative))} · ${escapeHtml(labelOf(CHAINS, d.chain))} · ${escapeHtml(labelOf(AUDIENCES, d.audience))} · ${escapeHtml(pf)}`;
+    const avg = Number(d.avgRating10) || 0;
+    const ps = Math.round(Number(d.productScore10) || 0);
+    const ts = Math.round(Number(d.techScore10) || 0);
+    const fansG = Math.round(Number(d.fansGained) || 0);
+    const cost = Math.round(Number(d.costSpent) || 0);
+    const postId = d.kind === "launch" ? d.productId : d.baseProductId;
+    return `
+      <div class="item">
         <div class="item__top">
           <div>
-            <div class="item__title">${escapeHtml(e.companyName)} · L${e.level}</div>
-            <div class="muted" style="margin-top:6px;">${escapeHtml(tr(state, "ui.career.salary"))}：${money(e.salaryWeekly)} ｜ ${escapeHtml(tr(state, "ui.career.workMode"))}：${escapeHtml(wm)} ｜ ${escapeHtml(tr(state, "ui.career.performance"))}：${clamp(e.performance, 0, 100)}/100 ｜ ${escapeHtml(tr(state, "ui.career.trust"))}：${clamp(e.trust, 0, 100)}/100 ｜ ${escapeHtml(tr(state, "ui.career.politics"))}：${clamp(e.politics, 0, 100)}/100</div>
+            <div class="item__title">${escapeHtml(d.title || "（未命名）")} <span class="muted">（评分 ${avg.toFixed(1)}/10）</span></div>
+            <div class="muted" style="margin-top:6px;">${meta}</div>
           </div>
-          <div class="chips"><span class="${cls}">${escapeHtml(typeText)}</span></div>
-        </div>
-        <div class="item__body muted">
-          ${escapeHtml(tr(state, "ui.career.managerToxicity"))}：${clamp(e.manager?.toxicity ?? 0, 0, 100)}/100 ｜ ${escapeHtml(tr(state, "ui.career.kpi"))}：${escapeHtml(e.vanityKpi?.mode || "none")}
-          <div style="margin-top:6px;">${escapeHtml(tr(state, "ui.career.promoLine", { now: promoNow.toFixed(1), target: promoTarget, gain: promoGain.toFixed(1) }))}</div>
+          <div class="chips">
+            ${chip(`产品分 ${ps}/10`)}
+            ${chip(`技术分 ${ts}/10`)}
+            ${chip(`粉丝 +${fansG.toLocaleString("zh-CN")}`)}
+            ${chip(`成本 ${money(cost)}`)}
+          </div>
         </div>
         <div class="item__actions">
-          ${
-            e.workMode === "onsite"
-              ? `<button class="btn" data-career="requestRemote">${escapeHtml(tr(state, "ui.career.btn.requestRemote"))}</button>`
-              : ""
-          }
-          <button class="btn" data-career="quitJob">${escapeHtml(tr(state, "ui.career.btn.quit"))}</button>
+          <button class="btn" data-done-detail="${escapeHtml(d.id)}">详情</button>
+          ${postId ? `<button class="btn btn--ghost" data-postmortem="${escapeHtml(postId)}">复盘</button>` : ""}
         </div>
-      </div>`;
-    }
-  }
+      </div>
+    `;
+  };
 
-  // Company tickets
-  const tasksHost = $("#companyTasks");
-  if (tasksHost) {
-    const list = state.active.company || [];
-    tasksHost.innerHTML =
-      list.length === 0
-        ? `<div class="muted">${escapeHtml(tr(state, "ui.career.tasks.empty"))}</div>`
-        : list
-            .map((tk) => {
-              const chips = [
-                `<span class="chip">${escapeHtml(tr(state, `company.ticketType.${tk.ticketType}`))}</span>`,
-                `<span class="chip">${tk.deadlineWeeks} ${escapeHtml(tr(state, "ui.unit.week"))}</span>`,
-              ];
-              const line = tr(state, "ui.career.ticket.line", {
-                progress: clamp(tk.progress ?? 0, 0, 100),
-                impact: clamp(tk.impact ?? 50, 0, 100),
-              });
-              const title =
-                tk.kind === "company"
-                  ? tr(state, "project.company.title", { type: tr(state, `company.ticketType.${tk.ticketType}`), scope: tk.scope ?? 0 })
-                  : tk.title;
-              return `<div class="item">
-                <div class="item__top">
-                  <div>
-                    <div class="item__title">${escapeHtml(title)}</div>
-                    <div class="muted" style="margin-top:6px;">${escapeHtml(line)}</div>
-                  </div>
-                  <div class="chips">${chips.join("")}</div>
-                </div>
-                <div class="item__actions">
-                  <button class="btn" data-select="company:${tk.id}">${escapeHtml(tr(state, "ui.common.setAsTarget"))}</button>
-                </div>
-              </div>`;
-            })
-            .join("");
-  }
+  const pickLine = target
+    ? `<div class="muted" style="margin-bottom:10px;">当前选中：${escapeHtml(target.title || "")}</div>`
+    : `<div class="muted" style="margin-bottom:10px;">当前选中：无</div>`;
 
-  // Major incident panel
-  const miHost = $("#majorIncidentPanel");
-  if (miHost) {
-    const mi = state.majorIncident;
-    if (!mi || !mi.active) {
-      miHost.innerHTML = `<div class="muted">${escapeHtml(tr(state, "ui.career.major.empty"))}</div>`;
-    } else {
-      const p = mi.progress || {};
-      miHost.innerHTML = `<div class="item">
-        <div class="item__top">
-          <div>
-            <div class="item__title">⚠️ ${escapeHtml(mi.title)}</div>
-            <div class="muted" style="margin-top:6px;">${escapeHtml(
-              tr(state, "ui.career.major.windowLine", {
-                weeks: mi.weeksLeft,
-                wk: tr(state, "ui.unit.week"),
-                analysis: clamp(p.analysis || 0, 0, 100),
-                tracing: clamp(p.tracing || 0, 0, 100),
-                writeup: clamp(p.writeup || 0, 0, 100),
-                x: clamp(p.xThread || 0, 0, 100),
-              })
-            )}</div>
-          </div>
-          <div class="chips"><span class="chip chip--warn">${escapeHtml(tr(state, "ui.career.major.chip"))}</span></div>
-        </div>
-        <div class="item__body muted">${escapeHtml(tr(state, "ui.career.major.tip"))}</div>
-      </div>`;
-    }
-  }
+  const stageBoard =
+    target && target.kind === "project"
+      ? (() => {
+          const p = target;
+          const idx = clamp(Math.round(p.stageIndex || 0), 0, 2);
+          const curPct = clamp(Math.round(p.stageProgress || 0), 0, 100);
+          const stageMeta = [
+            { key: "S1", name: "阶段 1：产品/架构" },
+            { key: "S2", name: "阶段 2：开发实现" },
+            { key: "S3", name: "阶段 3：上线准备" },
+          ];
+          const cell = (i) => {
+            const isCur = i === idx;
+            const isDone = i < idx;
+            const pct = isDone ? 100 : isCur ? curPct : 0;
+            const tag = isDone ? chip("已完成", "good") : isCur ? chip(p.stagePaused ? "待配置" : "进行中", p.stagePaused ? "warn" : "good") : chip("未开始");
+            return `
+              <div class="card" style="padding:12px; background: rgba(255,255,255,.03); border-color: rgba(255,255,255,.10);">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                  <div style="font-weight:900;">${escapeHtml(stageMeta[i].name)}</div>
+                  <div class="chips">${tag}${chip(`${pct}%`, isDone ? "good" : isCur && p.stagePaused ? "warn" : isCur ? "good" : "")}</div>
+                </div>
+                <div class="bar" style="margin-top:10px;"><i style="width:${pct}%"></i></div>
+                <div class="muted" style="margin-top:8px;">
+                  ${isCur ? (p.stagePaused ? "需要先做“阶段配置”（滑条配方），否则进度不会推进。" : "时间推进时会持续推进本阶段进度。") : isDone ? "该阶段已结算完成。" : "尚未进入该阶段。"}
+                </div>
+              </div>
+            `;
+          };
+          return `
+            <div class="item" style="margin-bottom:12px;">
+              <div class="item__top">
+                <div>
+                  <div class="item__title">开发进度（核心玩法）</div>
+                  <div class="muted" style="margin-top:6px;">三阶段是主循环：每次进新阶段都会弹出“配方滑条”。</div>
+                </div>
+                <div class="chips">${chip(`当前 ${projectStage(p)}`, p.stagePaused ? "warn" : "good")}</div>
+              </div>
+              <div class="item__body">
+                <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;">
+                  ${cell(0)}
+                  ${cell(1)}
+                  ${cell(2)}
+                </div>
+              </div>
+            </div>
+          `;
+        })()
+      : "";
+
+  const researchPanel =
+    state.research?.task
+      ? (() => {
+          const t = state.research.task;
+          const pct = clamp(Math.round(((Number(t.hoursDone) || 0) / Math.max(1, Number(t.hoursTotal) || 1)) * 100), 0, 100);
+          const title = t.kind === "node" ? "科研进行中" : "研发进行中";
+          const name =
+            t.kind === "node"
+              ? `节点：${t.nodeId || "—"}`
+              : t.engineKey
+                ? `引擎：${String(t.engineKey).toUpperCase()}`
+                : "—";
+          const who = t.assigneeId ? (state.team?.members || []).find((m) => m.id === t.assigneeId)?.name || "（未知）" : "（未指派）";
+          return `
+            <div class="item" style="margin-bottom:12px;">
+              <div class="item__top">
+                <div>
+                  <div class="item__title">${escapeHtml(title)}</div>
+                  <div class="muted" style="margin-top:6px;">${escapeHtml(name)} · 负责人：${escapeHtml(who)} · ${pct}%</div>
+                </div>
+                <div class="chips">${chip(`${Math.round(Number(t.hoursDone) || 0)}/${Math.round(Number(t.hoursTotal) || 0)}h`)}</div>
+              </div>
+              <div class="bar" style="margin-top:10px;"><i style="width:${pct}%"></i></div>
+            </div>
+          `;
+        })()
+      : "";
+
+  host.innerHTML = `
+    ${pickLine}
+    ${researchPanel}
+    ${stageBoard}
+    <div class="subhead">进行中的项目</div>
+    <div class="list">${active.length ? active.map(projectLine).join("") : `<div class="muted">暂无进行中项目。</div>`}</div>
+    <div class="divider"></div>
+    <div class="subhead">已上线产品</div>
+    <div class="list">${live.length ? live.map(productLine).join("") : `<div class="muted">暂无上线产品。</div>`}</div>
+    <div class="divider"></div>
+    <div class="subhead">已研发项目</div>
+    <div class="list">${done.length ? done.map(doneLine).join("") : `<div class="muted">暂无已研发项目。</div>`}</div>
+  `;
 }
 
 function renderMarket(state) {
-  $("#directMarket").innerHTML = state.market.direct.map((o) => renderMarketCard(state, o)).join("");
-  $("#platformMarket").innerHTML = state.market.platform.map((o) => renderMarketCard(state, o)).join("");
-
-  $("#directActive").innerHTML =
-    state.active.direct.length === 0
-      ? `<div class="muted">${escapeHtml(tr(state, "ui.common.none"))}</div>`
-      : state.active.direct.map((p) => renderActiveCard(state, p)).join("");
-  $("#platformActive").innerHTML =
-    state.active.platform.length === 0
-      ? `<div class="muted">${escapeHtml(tr(state, "ui.common.none"))}</div>`
-      : state.active.platform.map((p) => renderActiveCard(state, p)).join("");
-}
-
-function renderMarketCard(state, o) {
-  const chips = [];
-  chips.push(`<span class="chip">${escapeHtml(protocolLabel(state, o.protocol))}</span>`);
-  chips.push(`<span class="chip">${escapeHtml(tr(state, "ui.market.scope"))} ${o.scope}</span>`);
-  chips.push(`<span class="chip">${o.deadlineWeeks} ${escapeHtml(tr(state, "ui.unit.week"))}</span>`);
-  if (o.kind === "direct") {
-    chips.push(`<span class="chip chip--good">${money(o.fee)}</span>`);
-    chips.push(
-      `<span class="chip ${o.cooperation >= 70 ? "chip--good" : o.cooperation <= 45 ? "chip--warn" : ""}">${escapeHtml(
-        tr(state, "ui.marketCard.direct.coop")
-      )} ${o.cooperation}</span>`
-    );
-    chips.push(
-      `<span class="chip ${o.deadlineWeeks <= 2 ? "chip--warn" : ""}">${escapeHtml(tr(state, "ui.marketCard.direct.rush"))} ${
-        o.deadlineWeeks <= 2 ? escapeHtml(tr(state, "ui.bool.yes")) : escapeHtml(tr(state, "ui.bool.no"))
-      }</span>`
-    );
-  } else {
-    chips.push(`<span class="chip chip--good">${money(o.prizePool)}</span>`);
-    chips.push(
-      `<span class="chip ${o.popularity >= 75 ? "chip--warn" : ""}">${escapeHtml(tr(state, "ui.market.hype"))} ${o.popularity}</span>`
-    );
-  }
-
-  const bodyLines = [];
-  bodyLines.push(o.notes);
-  if (o.kind === "direct") bodyLines.push(tr(state, "ui.market.riskHint", { v: o.adversary }));
-  else bodyLines.push(tr(state, "ui.market.contestHint"));
-
-  return `
-      <div class="item">
-        <div class="item__top">
-          <div class="item__title">${escapeHtml(o.title)}</div>
-          <div class="chips">${chips.join("")}</div>
-        </div>
-        <div class="item__body">${bodyLines.map(escapeHtml).join("<br/>")}</div>
-        <div class="item__actions">
-          <button class="btn btn--primary" data-accept="${o.kind}:${o.id}">${escapeHtml(o.kind === "direct" ? tr(state, "ui.market.accept.direct") : tr(state, "ui.market.accept.platform"))}</button>
-        </div>
-      </div>
-    `;
-}
-
-function renderActiveCard(state, p) {
-  const chips = [];
-  chips.push(`<span class="chip">${escapeHtml(protocolLabel(state, p.protocol))}</span>`);
-  chips.push(`<span class="chip">${p.deadlineWeeks} ${escapeHtml(tr(state, "ui.unit.week"))}</span>`);
-  chips.push(`<span class="chip">${escapeHtml(tr(state, "ui.project.coverage"))}${p.coverage}%</span>`);
-  chips.push(`<span class="chip chip--good">${money(p.kind === "direct" ? p.fee : p.prizePool)}</span>`);
-
-  const summary =
-    p.kind === "direct"
-      ? tr(state, "ui.active.direct.summary", {
-          report: tr(state, "ui.marketCard.active.report"),
-          reportPct: clamp(p.report?.draft ?? 0, 0, 100),
-          findings: tr(state, "ui.marketCard.active.findings"),
-          found: p.found.length,
-          entry: tr(state, "ui.unit.entry"),
-          fixRate: tr(state, "ui.marketCard.active.fixRate"),
-          fixRatePct: clamp(p.fixRate ?? 50, 0, 100),
-          shipUrgency: tr(state, "ui.marketCard.active.shipUrgency"),
-          shipUrgencyPct: clamp(p.shipUrgency ?? 50, 0, 100),
-        })
-      : tr(state, "ui.active.platform.summary", {
-          draft: tr(state, "ui.marketCard.active.draft"),
-          draftN: p.submissions.filter((x) => x.status === "draft").length,
-          submitted: tr(state, "ui.marketCard.active.submitted"),
-          submittedN: p.submissions.filter((x) => x.status === "submitted").length,
-          entry: tr(state, "ui.unit.entry"),
-          evidence: tr(state, "ui.marketCard.active.evidence"),
-          evidencePct: clamp(p.evidence ?? 0, 0, 100),
-        });
-
-  return `
-      <div class="item">
+  const hireHost = document.getElementById("hireMarket");
+  if (!hireHost) return;
+  const hires = state.market.hires || [];
+  hireHost.innerHTML = hires.length
+    ? hires
+        .map((c) => {
+          const s = c.skills || {};
+          const perkText = c.perk?.name ? `${c.perk.name}：${c.perk.desc || ""}` : "";
+          const highlights = [
+            ["产品", s.product],
+            ["合约", s.contract],
+            ["安全", s.security],
+            ["增长", s.growth],
+          ]
+            .map(([k, v]) => `${k}${Math.round(v)}`)
+            .join(" · ");
+          return `<div class="item">
         <div class="item__top">
           <div>
-            <div class="item__title">${escapeHtml(p.title)}</div>
-            <div class="muted" style="margin-top:6px;">${escapeHtml(summary)}</div>
+            <div class="item__title">${escapeHtml(c.name)} <span class="muted">(${escapeHtml(c.trait || "")})</span></div>
+            <div class="muted" style="margin-top:6px;">${escapeHtml(highlights)}${perkText ? `<br/>${escapeHtml(perkText)}` : ""}</div>
           </div>
-          <div class="chips">${chips.join("")}</div>
+          <div class="chips">${chip(`周薪 ${money(c.salaryWeekly)}`)}</div>
         </div>
         <div class="item__actions">
-          <button class="btn" data-select="${p.kind}:${p.id}">${escapeHtml(tr(state, "ui.common.setAsTarget"))}</button>
+          <button class="btn" data-accept="hire:${c.id}">招募</button>
+        </div>
+      </div>`;
+        })
+        .join("")
+    : `<div class="muted">暂无候选人。</div>`;
+}
+
+function renderTeam(state) {
+  const host = document.getElementById("teamList");
+  if (!host) return;
+  const ms = state.team?.members || [];
+  if (!ms.length) {
+    host.innerHTML = `<div class="muted">暂无团队成员。</div>`;
+    return;
+  }
+
+  const card = (m) => {
+    const s = m.skills || {};
+    const perk = m.perk?.name ? `${m.perk.name}：${m.perk.desc || ""}` : "";
+    const rows = [
+      ["产品", s.product],
+      ["设计", s.design],
+      ["机制", s.protocol],
+      ["合约", s.contract],
+      ["运维", s.infra],
+      ["安全", s.security],
+      ["增长", s.growth],
+      ["合规", s.compliance],
+    ]
+      .map(([k, v]) => {
+        const n = clamp(Math.round(Number(v) || 0), 0, 100);
+        return `<div class="statRow"><div class="statRow__k">${escapeHtml(k)}</div><div class="statRow__v">${n}</div></div>`;
+      })
+      .join("");
+
+    return `
+      <div class="memberCard">
+        <div class="memberCard__top">
+          <div>
+            <div class="memberCard__name">${escapeHtml(m.name)}</div>
+            <div class="muted" style="margin-top:4px;">${escapeHtml(m.role || "staff")}</div>
+          </div>
+          <div class="chips">${chip(m.salaryWeekly ? `周薪 ${money(m.salaryWeekly)}` : "创始人")}</div>
+        </div>
+        ${perk ? `<div class="memberCard__perk muted">${escapeHtml(perk)}</div>` : ""}
+        <div class="memberCard__stats">
+          ${rows}
         </div>
       </div>
     `;
+  };
+
+  host.innerHTML = `
+    <div class="item" style="margin-bottom:12px;">
+      <div class="item__top">
+        <div>
+          <div class="item__title">人才探索</div>
+          <div class="muted" style="margin-top:6px;">从不同渠道拉候选人（猎头 / 招聘平台 / 朋友介绍），会消耗现金。</div>
+        </div>
+        <div class="chips">${chip(`当前候选人 ${Math.round((state.market?.hires || []).length)}`)}</div>
+      </div>
+      <div class="item__actions">
+        <button class="btn" data-ui="exploreCandidates">探索候选人</button>
+      </div>
+    </div>
+    <div class="teamGrid">${ms.map(card).join("")}</div>
+  `;
+}
+
+function renderResearch(state) {
+  const host = document.getElementById("researchPanel");
+  if (!host) return;
+  const e = state.engine || {};
+  const r = state.resources;
+  const task = state.research?.task || null;
+  const pct = task ? clamp(Math.round(((Number(task.hoursDone) || 0) / Math.max(1, Number(task.hoursTotal) || 1)) * 100), 0, 100) : 0;
+
+  const nextUpgrade = (engineKey) => {
+    const cur = clamp(Math.round(e?.[engineKey]?.version ?? 1), 1, 9);
+    const target = clamp(cur + 1, 1, 9);
+    const node = (RESEARCH_TREE?.nodes || []).find((n) => n?.kind === "engine_upgrade" && n?.engineKey === engineKey && Number(n?.targetVersion) === target) || null;
+    if (!node) return { label: `${engineKey.toUpperCase()}：已满级`, disabled: true };
+    return { label: `${engineKey.toUpperCase()}：${node.title}（v${cur}→v${target}）`, disabled: false };
+  };
+  const uDev = nextUpgrade("dev");
+  const uSec = nextUpgrade("sec");
+  const uInfra = nextUpgrade("infra");
+  const uEco = nextUpgrade("eco");
+
+  const nodes = (RESEARCH_TREE?.nodes || []).filter((n) => n && n.id && n.pos);
+  const edges = [];
+  for (const n of nodes) {
+    for (const pre of n.requires || []) {
+      const from = nodes.find((x) => x.id === pre);
+      if (!from) continue;
+      edges.push({ from, to: n });
+    }
+  }
+  const minX = Math.min(...nodes.map((n) => n.pos.x));
+  const minY = Math.min(...nodes.map((n) => n.pos.y));
+  const maxX = Math.max(...nodes.map((n) => n.pos.x + 160));
+  const maxY = Math.max(...nodes.map((n) => n.pos.y + 92));
+  const width = Math.max(900, maxX - minX + 80);
+  const height = Math.max(520, maxY - minY + 80);
+
+  const nodeHtml = nodes
+    .map((n) => {
+      const st = researchNodeStatus(state, n.id);
+      const cls =
+        st.kind === "done"
+          ? "rgnode is-done"
+          : st.kind === "locked"
+            ? "rgnode is-locked"
+            : st.kind === "researching"
+              ? "rgnode is-doing"
+              : "rgnode is-avail";
+      const badge = st.kind === "done" ? "已完成" : st.kind === "locked" ? "锁定" : st.kind === "researching" ? "研究中" : "可研究";
+      const disabled = st.kind === "done" || st.kind === "locked" || (state.research?.task && st.kind !== "researching");
+      const left = n.pos.x - minX + 40;
+      const top = n.pos.y - minY + 40;
+      return `
+        <button class="${cls}" style="left:${left}px; top:${top}px;" ${disabled ? "disabled" : ""} data-research="treeNode:${escapeHtml(n.id)}">
+          <div class="rgnode__title">${escapeHtml(n.title || n.id)}</div>
+          <div class="rgnode__meta">${escapeHtml(n.effectLabel || "")}${n.effectLabel ? " · " : ""}${escapeHtml(badge)}</div>
+          <div class="rgnode__hint">${escapeHtml(n.hint || "")}</div>
+        </button>
+      `;
+    })
+    .join("");
+
+  const edgeSvg = edges
+    .map((e) => {
+      const x1 = e.from.pos.x - minX + 40 + 80;
+      const y1 = e.from.pos.y - minY + 40 + 46;
+      const x2 = e.to.pos.x - minX + 40 + 80;
+      const y2 = e.to.pos.y - minY + 40 + 46;
+      return `<path d="M ${x1} ${y1} C ${x1 + 60} ${y1} ${x2 - 60} ${y2} ${x2} ${y2}" fill="none" stroke="rgba(0,0,0,.14)" stroke-width="2"/>`;
+    })
+    .join("");
+
+  host.innerHTML = `
+    <div class="item">
+      <div class="item__top">
+        <div>
+          <div class="item__title">研发中心</div>
+          <div class="muted" style="margin-top:6px;">Dev v${e.dev?.version ?? 1} · Sec v${e.sec?.version ?? 1} · Infra v${e.infra?.version ?? 1} · Eco v${e.eco?.version ?? 1}</div>
+        </div>
+        <div class="chips">${chip(`技术点 ${r.techPoints}`)}</div>
+      </div>
+      <div class="item__actions" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;">
+        <button class="btn" data-research="upgrade:dev" ${(task || uDev.disabled) ? "disabled" : ""}>${escapeHtml(uDev.label)}</button>
+        <button class="btn" data-research="upgrade:sec" ${(task || uSec.disabled) ? "disabled" : ""}>${escapeHtml(uSec.label)}</button>
+        <button class="btn" data-research="upgrade:infra" ${(task || uInfra.disabled) ? "disabled" : ""}>${escapeHtml(uInfra.label)}</button>
+        <button class="btn" data-research="upgrade:eco" ${(task || uEco.disabled) ? "disabled" : ""}>${escapeHtml(uEco.label)}</button>
+        <button class="btn btn--ghost" data-research="treeNode:postmortem_zena" ${task ? "disabled" : ""}>泽娜复盘（解锁搭配）</button>
+      </div>
+      ${task ? `
+        <div class="divider"></div>
+        <div class="subhead">进行中的研发</div>
+        <div class="muted">进度 ${pct}%（${Math.round(Number(task.hoursDone)||0)}/${Math.round(Number(task.hoursTotal)||0)}h）</div>
+        <div class="bar" style="margin-top:10px;"><i style="width:${pct}%"></i></div>
+      ` : ""}
+    </div>
+
+    <div class="item">
+      <div class="item__top">
+        <div>
+          <div class="item__title">科研树（合并大树）</div>
+          <div class="muted" style="margin-top:6px;">点击节点开始研发；分支可以交汇形成新节点。</div>
+        </div>
+          <div class="chips">${chip("可横向滚动 / 触控板平移")}</div>
+      </div>
+      <div class="researchGraph" style="margin-top:10px;">
+        <div class="researchGraph__canvas" style="width:${width}px; height:${height}px;">
+          <svg class="researchGraph__edges" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+            ${edgeSvg}
+          </svg>
+          ${nodeHtml}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderOpsInto(host, state, compact = false) {
+  if (!host) return;
+  ensureSelection(state);
+  const sel = state.selectedTarget;
+  const target = sel ? findTarget(state, sel.kind, sel.id) : null;
+  if (!target || target.kind !== "product") {
+    host.innerHTML = `<div class="muted">请先在“总览”里选中一个已上线产品。</div>`;
+    return;
+  }
+  const k = target.kpi || {};
+  const ops = target.ops || {};
+  const hist = Array.isArray(target.history) ? target.history.slice(-30) : [];
+
+  const sparkline = (vals, labels, w = 520, h = 110) => {
+    const xs = vals.map((v) => (typeof v === "number" && Number.isFinite(v) ? v : 0));
+    if (xs.length < 2) {
+      return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" role="img" aria-label="sparkline"><path d="M0 ${h - 18} L ${w} ${h - 18}" stroke="rgba(0,0,0,.12)" stroke-width="2" fill="none"/></svg>`;
+    }
+    let min = Math.min(...xs);
+    let max = Math.max(...xs);
+    if (min === max) {
+      min -= 1;
+      max += 1;
+    }
+
+    const fmt = (n) => {
+      const v = Number(n) || 0;
+      const abs = Math.abs(v);
+      // small numbers (e.g., token price)
+      if (abs < 50 && Math.max(Math.abs(min), Math.abs(max)) < 50) return v.toFixed(2);
+      if (abs >= 1e8) return `${(v / 1e8).toFixed(1)}亿`;
+      if (abs >= 1e4) return `${(v / 1e4).toFixed(1)}万`;
+      return `${Math.round(v)}`;
+    };
+
+    // paddings for axes labels
+    const padL = 46;
+    const padR = 10;
+    const padT = 10;
+    const padB = 22;
+
+    const toX = (i) => padL + (i * (w - padL - padR)) / (xs.length - 1);
+    const toY = (v) => {
+      const t = (v - min) / (max - min);
+      return padT + (1 - t) * (h - padT - padB);
+    };
+    const pts = xs.map((v, i) => `${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(" ");
+
+    const axisStroke = "rgba(0,0,0,.18)";
+    const gridStroke = "rgba(0,0,0,.08)";
+    const textFill = "rgba(0,0,0,.62)";
+    const lineStroke = "rgba(214,179,95,.95)";
+    const areaFill = "rgba(214,179,95,.18)";
+
+    const x0 = padL;
+    const x1 = w - padR;
+    const y0 = padT;
+    const y1 = h - padB;
+
+    const pickLabel = (idx) => {
+      const l = labels?.[idx];
+      if (!l) return `${idx + 1}`;
+      // YYYY-MM-DD -> MM-DD
+      return String(l).slice(5);
+    };
+
+    const xTicks = [
+      { i: 0, x: toX(0), label: pickLabel(0) },
+      { i: Math.floor((xs.length - 1) / 2), x: toX(Math.floor((xs.length - 1) / 2)), label: pickLabel(Math.floor((xs.length - 1) / 2)) },
+      { i: xs.length - 1, x: toX(xs.length - 1), label: pickLabel(xs.length - 1) },
+    ];
+
+    return `
+      <svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" role="img" aria-label="sparkline">
+        <!-- grid -->
+        <line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y0}" stroke="${gridStroke}" stroke-width="1"/>
+        <line x1="${x0}" y1="${(y0 + y1) / 2}" x2="${x1}" y2="${(y0 + y1) / 2}" stroke="${gridStroke}" stroke-width="1"/>
+        <line x1="${x0}" y1="${y1}" x2="${x1}" y2="${y1}" stroke="${axisStroke}" stroke-width="1"/>
+
+        <!-- y axis labels -->
+        <text x="6" y="${y0 + 4}" font-size="11" fill="${textFill}" font-family="var(--mono)">${escapeHtml(fmt(max))}</text>
+        <text x="6" y="${y1}" font-size="11" fill="${textFill}" font-family="var(--mono)">${escapeHtml(fmt(min))}</text>
+
+        <!-- area + line -->
+        <polyline points="${pts} ${x1},${y1} ${x0},${y1}" fill="${areaFill}" stroke="none"/>
+        <polyline points="${pts}" fill="none" stroke="${lineStroke}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+
+        <!-- x axis ticks -->
+        ${xTicks
+          .map(
+            (t) => `
+          <line x1="${t.x}" y1="${y1}" x2="${t.x}" y2="${y1 + 5}" stroke="${axisStroke}" stroke-width="1"/>
+          <text x="${t.x}" y="${h - 6}" font-size="11" fill="${textFill}" text-anchor="middle" font-family="var(--mono)">${escapeHtml(t.label)}</text>
+        `
+          )
+          .join("")}
+      </svg>
+    `;
+  };
+
+  const chartBlock =
+    !compact && hist.length >= 2
+      ? `
+        <div class="item" style="margin-top:12px;">
+          <div class="item__top">
+            <div>
+              <div class="item__title">最近 ${hist.length} 天趋势</div>
+              <div class="muted" style="margin-top:6px;">按“天”结算，便于观察运营参数即时影响。</div>
+            </div>
+          </div>
+          <div class="item__body">
+            <div class="muted" style="margin-bottom:6px;">币价</div>
+            ${sparkline(
+              hist.map((x) => x.tokenPrice),
+              hist.map((x) => x?.t?.dateISO || ""),
+              520,
+              110
+            )}
+            <div class="muted" style="margin-bottom:6px;">DAU</div>
+            ${sparkline(
+              hist.map((x) => x.dau),
+              hist.map((x) => x?.t?.dateISO || ""),
+              520,
+              110
+            )}
+            <div class="muted" style="margin-top:10px;margin-bottom:6px;">TVL</div>
+            ${sparkline(
+              hist.map((x) => x.tvl),
+              hist.map((x) => x?.t?.dateISO || ""),
+              520,
+              110
+            )}
+            <div class="muted" style="margin-top:10px;margin-bottom:6px;">利润（每日）</div>
+            ${sparkline(
+              hist.map((x) => x.profit),
+              hist.map((x) => x?.t?.dateISO || ""),
+              520,
+              110
+            )}
+          </div>
+        </div>
+      `
+      : compact
+        ? ""
+        : `<div class="muted" style="margin-top:10px;">趋势图需要至少 2 天游玩数据（先跑一跑时间）。</div>`;
+
+  host.innerHTML = `
+    <div class="item">
+      <div class="item__top">
+        <div>
+          <div class="item__title">${escapeHtml(target.title)}</div>
+          <div class="muted" style="margin-top:6px;">币价 $${(Number(k.tokenPrice) || 0).toFixed(2)} · DAU ${Math.round(k.dau || 0).toLocaleString("zh-CN")} · TVL ${Math.round(k.tvl || 0).toLocaleString("zh-CN")} · 日利润 ${money(k.profit || 0)}</div>
+        </div>
+        <div class="chips">${chip(`费率 ${k.feeRateBps || 0} bps`)}</div>
+      </div>
+      <div class="item__body">
+        <div class="muted" style="margin-bottom:6px;">手续费 (bps)</div>
+        <input class="input" type="range" min="0" max="80" value="${clamp(Math.round(k.feeRateBps || 0), 0, 80)}" data-ops="feeRateBps:${target.id}" />
+        <div class="muted" style="margin-top:10px;margin-bottom:6px;">回购比例 (0~50%)</div>
+        <input class="input" type="range" min="0" max="50" value="${clamp(Math.round((ops.buybackPct || 0) * 100), 0, 50)}" data-ops="buybackPct:${target.id}" />
+        <div class="muted" style="margin-top:10px;margin-bottom:6px;">排放/增发强度 (0~100)</div>
+        <input class="input" type="range" min="0" max="100" value="${clamp(Math.round((ops.emissions || 0) * 100), 0, 100)}" data-ops="emissions:${target.id}" />
+        <div class="muted" style="margin-top:10px;margin-bottom:6px;">每周激励预算 (¥)</div>
+        <input class="input" type="number" min="0" step="100" value="${clamp(Math.round(ops.incentivesBudgetWeekly || 0), 0, 999999999)}" data-ops="incentivesBudgetWeekly:${target.id}" />
+      </div>
+      <div class="item__actions">
+        <button class="btn btn--ghost" data-upgrade="${escapeHtml(target.id)}">二次开发</button>
+      </div>
+    </div>
+    ${chartBlock}
+  `;
+}
+
+function renderOps(state) {
+  renderOpsInto(document.getElementById("opsPanel"), state, false);
+  renderOpsInto(document.getElementById("opsPanelFixed"), state, true);
 }
 
 function renderLog(state) {
-  const host = $("#log");
+  const host = document.getElementById("log");
   if (!host) return;
   host.innerHTML =
-    state.log.length === 0
-      ? `<div class="muted">${escapeHtml(tr(state, "ui.log.empty"))}</div>`
+    (state.log || []).length === 0
+      ? `<div class="muted">暂无日志。</div>`
       : state.log
           .slice(0, 60)
           .map((x) => {
@@ -732,153 +688,180 @@ function renderLog(state) {
           .join("");
 }
 
-function renderLeaderboards(state) {
-  const earnHost = $("#lbEarn");
-  const findHost = $("#lbFind");
-  if (!earnHost || !findHost) return;
-
-  const lb = state.leaderboards || { playerWeek: { earnedWeek: 0, findingsWeek: 0 }, npcs: [] };
-  const prog = state.progress || { earnedTotal: 0, findingsTotal: 0 };
-
-  const youName = state?.player?.name || (state?.settings?.lang === "en" ? "You" : "你");
-  const rows = [
-    {
-      name: youName,
-      earnedTotal: Math.round(prog.earnedTotal || 0),
-      findingsTotal: Math.round(prog.findingsTotal || 0),
-      earnedWeek: Math.round(lb.playerWeek?.earnedWeek || 0),
-      findingsWeek: Math.round(lb.playerWeek?.findingsWeek || 0),
-      tone: "good",
-    },
-    ...((lb.npcs || []).map((n) => ({
-      name: String(n?.name || "anon"),
-      earnedTotal: Math.round(n?.earnedTotal || 0),
-      findingsTotal: Math.round(n?.findingsTotal || 0),
-      earnedWeek: Math.round(n?.earnedWeek || 0),
-      findingsWeek: Math.round(n?.findingsWeek || 0),
-      tone: "info",
-    })) || []),
-  ];
-
-  const earnRank = [...rows].sort((a, b) => (b.earnedTotal || 0) - (a.earnedTotal || 0)).slice(0, 10);
-  const findRank = [...rows].sort((a, b) => (b.findingsTotal || 0) - (a.findingsTotal || 0)).slice(0, 10);
-
-  const renderList = (items, mode) => {
-    const isEarn = mode === "earn";
-    const fmtTotal = (n) => (isEarn ? money(n) : String(Math.round(n || 0)));
-    const fmtWeek = (n) => (isEarn ? money(n) : String(Math.round(n || 0)));
-    return `<div class="feed" style="max-height:240px;overflow:auto;">${items
-      .map((r, idx) => {
-        const cls = r.tone === "good" ? "feed__item feed__item--good" : "feed__item";
-        const title = `${idx + 1}. ${r.name}`;
-        const wk = isEarn ? `+${fmtWeek(r.earnedWeek)}` : `+${fmtWeek(r.findingsWeek)}`;
-        const tot = isEarn ? fmtTotal(r.earnedTotal) : fmtTotal(r.findingsTotal);
-        return `<div class="${cls}">
-          <div style="display:flex;justify-content:space-between;gap:10px;">
-            <div>${escapeHtml(title)}</div>
-            <div class="muted">${escapeHtml(wk)} · ${escapeHtml(tot)}</div>
-          </div>
-        </div>`;
-      })
-      .join("")}</div>`;
-  };
-
-  earnHost.innerHTML = renderList(earnRank, "earn");
-  findHost.innerHTML = renderList(findRank, "find");
-}
-
-function renderShop(state) {
-  const host = $("#shopList");
-  const ownedHost = $("#shopOwned");
-  if (!host || !ownedHost) return;
-
-  host.innerHTML = SHOP_ITEMS.map((it) => {
-    const owned = itemCount(state, it.key);
-    const name = tr(state, `shop.item.${it.key}.name`);
-    const desc = tr(state, `shop.item.${it.key}.desc`);
-    const canBuy = state.stats.cash >= it.cost && (!it.once || owned === 0);
-    const buyLabel = it.once && owned > 0 ? tr(state, "ui.shop.soldout") : tr(state, "ui.shop.buy");
-    const btn = `<button class="btn btn--primary" data-shop="buy:${it.key}" ${canBuy ? "" : "disabled"}>${escapeHtml(buyLabel)} <span class="muted">(${money(it.cost)})</span></button>`;
-    const useBtn =
-      it.kind === "consumable"
-        ? `<button class="btn" data-shop="use:${it.key}" ${owned > 0 ? "" : "disabled"}>${escapeHtml(tr(state, "ui.shop.use"))} <span class="muted">(x${owned})</span></button>`
-        : "";
-
-    return `<div class="item">
-      <div class="item__top">
-        <div>
-          <div class="item__title">${escapeHtml(name)}</div>
-          <div class="muted" style="margin-top:6px;">${escapeHtml(desc)}</div>
-        </div>
-        <div class="chips"><span class="chip">${escapeHtml(it.kind === "permanent" ? "PERM" : "USE")}</span></div>
-      </div>
-      <div class="item__actions" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;">
-        ${btn}
-        ${useBtn}
-      </div>
-    </div>`;
-  }).join("");
-
-  const ownedKeys = Object.keys(state.shop?.owned || {}).filter((k) => itemCount(state, k) > 0);
-  ownedHost.innerHTML =
-    ownedKeys.length === 0
-      ? `<div class="muted">${escapeHtml(tr(state, "ui.common.none"))}</div>`
-      : ownedKeys
-          .map((k) => {
-            const c = itemCount(state, k);
-            return `<div class="item"><div class="item__top"><div class="item__title">${escapeHtml(tr(state, `shop.item.${k}.name`))}</div><div class="chips"><span class="chip">x${c}</span></div></div></div>`;
-          })
-          .join("");
-}
-
-function renderXFeed(state) {
-  const host = $("#xFeed");
+function renderInbox(state) {
+  const host = document.getElementById("inbox");
   if (!host) return;
-  const feed = state.x?.feed || [];
-  host.innerHTML =
-    feed.length === 0
-      ? `<div class="muted">${escapeHtml(tr(state, "ui.x.empty"))}</div>`
-      : feed
-          .slice(0, 40)
-          .map((p) => {
-            return `<div class="feed__item">
-              <div class="muted">${escapeHtml(p.t)} · ${escapeHtml(p.author)} · ♻ ${p.rts} · ♥ ${p.likes}</div>
-              <div>${escapeHtml(p.text)}</div>
-            </div>`;
-          })
-          .join("");
+  const items = (state.inbox?.items || []).slice(0, 30);
+  if (items.length === 0) {
+    host.innerHTML = `<div class="muted">暂无事件（下周再看看）。</div>`;
+    return;
+  }
+
+  const now = state.now || { year: 0, week: 0 };
+  const weeksBetween = (a, b) => (Math.round(b.year || 0) - Math.round(a.year || 0)) * 52 + (Math.round(b.week || 0) - Math.round(a.week || 0));
+
+  host.innerHTML = items
+    .map((it) => {
+      const def = INBOX_DEFS?.[it.def];
+      const title = def?.title || it.def;
+      const age = weeksBetween(it.created || now, now);
+      const ttl = clamp(Math.round(it.expiresInWeeks || 2), 1, 8);
+      const left = clamp(ttl - age, 0, ttl);
+      const desc = typeof def?.desc === "function" ? def.desc(state, it.payload || {}) : "";
+      const choices = (def?.choices || []).map((c) => {
+        const cls = c.primary ? "btn btn--primary" : "btn";
+        return `<button class="${cls}" data-inbox="${escapeHtml(it.id)}:${escapeHtml(c.key)}">${escapeHtml(c.label)}</button>`;
+      });
+
+      return `
+        <div class="item">
+          <div class="item__top">
+            <div>
+              <div class="item__title">${escapeHtml(title)}</div>
+              <div class="muted" style="margin-top:6px;">剩余 ${left} 周 · 创建于 ${escapeHtml(`第 ${it.created?.year} 年 · 第 ${it.created?.week} 周`)}</div>
+            </div>
+            <div class="chips">${chip(left <= 1 ? "即将过期" : "可选", left <= 1 ? "warn" : "")}</div>
+          </div>
+          <div class="item__body muted">${escapeHtml(desc || "")}</div>
+          <div class="item__actions" style="display:flex;gap:10px;flex-wrap:wrap;">
+            ${choices.join("")}
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+export function render(state) {
+  normalizeState(state);
+  applyLayout(state);
+  renderTopbar(state);
+  renderStats(state);
+  renderDashboard(state);
+  renderMarket(state);
+  renderTeam(state);
+  renderResearch(state);
+  renderOps(state);
+  renderLog(state);
+  renderInbox(state);
 }
 
 /**
- * 绑定 UI 事件；业务动作由 handlers 提供（方便你/我改逻辑时不动 UI）
+ * Bind UI events.
  * @param {any} state
- * @param {{
- *  onAction:(key:string)=>void,
- *  onAccept:(kind:string,id:string)=>void,
- *  onSelect:(kind:string,id:string)=>void,
- *  onEndWeek:()=>void,
- *  onSave:()=>void,
- *  onNewGame:()=>void,
- *  onResetGame:()=>void,
- *  onFeedback?:()=>void,
- *  onCloseModal:()=>void,
- *  onHoursChange:(h:number)=>void,
- *  onSeasonChange?:(weeks:number)=>void,
- *  onLangChange?:(lang:string)=>void
- *  onAutoChange?:(next:any)=>void
- *  onCareer?:(raw:string)=>void
- *  onShop?:(raw:string)=>void
- *  onInbox?:(raw:string)=>void
- *  onClearInbox?:()=>void
- * }} handlers
+ * @param {any} handlers
  */
 export function bind(state, handlers) {
+  // resizable left panel
+  const leftSplit = document.querySelector('.vsplit[data-split="left"]');
+  const leftPanel = document.getElementById("leftPanel");
+  if (leftSplit && leftPanel) {
+    let dragging = false;
+    let startX = 0;
+    let startW = 0;
+    const minW = 260;
+    const maxW = 560;
+
+    const onMove = (clientX) => {
+      if (!dragging) return;
+      const dx = clientX - startX;
+      const next = clamp(Math.round(startW + dx), minW, maxW);
+      state.settings = state.settings || {};
+      state.settings.layout = state.settings.layout || {};
+      state.settings.layout.colLeft = next;
+      document.documentElement.style.setProperty("--col-left", `${next}px`);
+    };
+
+    const stop = () => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.classList.remove("is-resizing");
+      window.removeEventListener("mousemove", onMouseMove, true);
+      window.removeEventListener("mouseup", stop, true);
+      window.removeEventListener("touchmove", onTouchMove, { capture: true });
+      window.removeEventListener("touchend", stop, true);
+      window.removeEventListener("touchcancel", stop, true);
+      handlers.onLayoutChange?.(state.settings.layout.colLeft);
+    };
+
+    const onMouseMove = (ev) => onMove(ev.clientX);
+    const onTouchMove = (ev) => {
+      const t = ev.touches?.[0];
+      if (!t) return;
+      onMove(t.clientX);
+    };
+
+    const start = (clientX) => {
+      dragging = true;
+      startX = clientX;
+      startW = clamp(Math.round(state.settings?.layout?.colLeft ?? 420), minW, maxW);
+      document.body.classList.add("is-resizing");
+      window.addEventListener("mousemove", onMouseMove, true);
+      window.addEventListener("mouseup", stop, true);
+      window.addEventListener("touchmove", onTouchMove, { capture: true, passive: true });
+      window.addEventListener("touchend", stop, true);
+      window.addEventListener("touchcancel", stop, true);
+    };
+
+    leftSplit.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      start(ev.clientX);
+    });
+    leftSplit.addEventListener("touchstart", (ev) => {
+      const t = ev.touches?.[0];
+      if (!t) return;
+      start(t.clientX);
+    }, { passive: true });
+  }
+
+  const closeMenus = () => {
+    const overlay = document.getElementById("menuOverlay");
+    if (!overlay) return;
+    overlay.classList.add("is-hidden");
+    overlay.setAttribute("aria-hidden", "true");
+    for (const p of overlay.querySelectorAll(".menuPanel")) p.classList.add("is-hidden");
+  };
+
+  const openMenu = (kind, anchorEl) => {
+    const overlay = document.getElementById("menuOverlay");
+    if (!overlay) return;
+    const panel = document.getElementById(`menu-${kind}`);
+    if (!panel) return;
+    const isOpen = !overlay.classList.contains("is-hidden") && !panel.classList.contains("is-hidden");
+    if (isOpen) {
+      closeMenus();
+      return;
+    }
+    overlay.classList.remove("is-hidden");
+    overlay.setAttribute("aria-hidden", "false");
+    for (const p of overlay.querySelectorAll(".menuPanel")) p.classList.add("is-hidden");
+    panel.classList.remove("is-hidden");
+
+    const r = anchorEl.getBoundingClientRect();
+    const vw = window.innerWidth || 1200;
+    const vh = window.innerHeight || 800;
+    const w = Math.min(520, Math.floor(vw * 0.92));
+    const margin = 10;
+    let left = Math.round(r.left);
+    left = Math.max(margin, Math.min(left, vw - w - margin));
+    let top = Math.round(r.bottom + 10);
+    top = Math.max(margin, Math.min(top, vh - margin - 60));
+    panel.style.width = `${w}px`;
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+  };
+
   document.addEventListener("click", (ev) => {
-    // 兼容：点击按钮文本时，ev.target 可能是 TextNode（没有 closest）
-    /** @type {any} */
     const raw = ev.target;
     const el = raw instanceof Element ? raw : raw?.parentElement;
     if (!el) return;
+
+    const menuBtn = el.closest?.("[data-menu]");
+    if (menuBtn) {
+      const kind = String(menuBtn.getAttribute("data-menu") || "").trim();
+      if (kind) openMenu(kind, menuBtn);
+      return;
+    }
 
     const tabBtn = el.closest?.(".tab");
     if (tabBtn) {
@@ -886,98 +869,206 @@ export function bind(state, handlers) {
       return;
     }
 
-    const actionBtn = el.closest?.("[data-action]");
-    if (actionBtn) {
-      handlers.onAction(actionBtn.getAttribute("data-action"));
+    const uiBtn = el.closest?.("[data-ui]");
+    if (uiBtn) {
+      const key = uiBtn.getAttribute("data-ui");
+      if (key === "closeModal") handlers.onCloseModal?.();
+      if (key === "closeMenus") closeMenus();
+      if (key === "toggleTime") handlers.onToggleTime?.();
+      if (key === "saveGame") handlers.onSave?.();
+      if (key === "newGame") handlers.onNewGame?.();
+      if (key === "createProject") handlers.onCreateProject?.();
+      if (key === "exploreCandidates") handlers.onExploreCandidates?.();
+      if (key === "resetGame") handlers.onResetGame?.();
+      if (key === "clearLog") handlers.onClearLog?.();
+      return;
+    }
+
+    const upBtn = el.closest?.("[data-upgrade]");
+    if (upBtn) {
+      const productId = String(upBtn.getAttribute("data-upgrade") || "");
+      if (productId) handlers.onCreateProject?.(productId);
       return;
     }
 
     const accBtn = el.closest?.("[data-accept]");
     if (accBtn) {
-      const [kind, id] = accBtn.getAttribute("data-accept").split(":");
-      handlers.onAccept(kind, id);
+      const [kind, id] = String(accBtn.getAttribute("data-accept") || "").split(":");
+      handlers.onAccept?.(kind, id);
       return;
     }
 
     const selBtn = el.closest?.("[data-select]");
     if (selBtn) {
-      const [kind, id] = selBtn.getAttribute("data-select").split(":");
-      handlers.onSelect(kind, id);
+      const [kind, id] = String(selBtn.getAttribute("data-select") || "").split(":");
+      handlers.onSelect?.(kind, id);
       return;
     }
 
-    const uiBtn = el.closest?.("[data-ui]");
-    if (uiBtn) {
-      const key = uiBtn.getAttribute("data-ui");
-      if (key === "closeModal") handlers.onCloseModal();
-      if (key === "endWeek") handlers.onEndWeek();
-      if (key === "saveGame") handlers.onSave();
-      if (key === "newGame") handlers.onNewGame();
-      if (key === "resetGame") handlers.onResetGame();
-      if (key === "feedback") handlers.onFeedback?.();
-      if (key === "clearLog") handlers.onClearLog?.();
-      if (key === "clearInbox") handlers.onClearInbox?.();
-      if (key === "langEn") handlers.onLangChange?.("en");
-      if (key === "langZh") handlers.onLangChange?.("zh");
+    const stageBtn = el.closest?.("[data-stage]");
+    if (stageBtn) {
+      const [kind, id] = String(stageBtn.getAttribute("data-stage") || "").split(":");
+      handlers.onStage?.(kind, id);
       return;
     }
 
-    const careerBtn = el.closest?.("[data-career]");
-    if (careerBtn) {
-      const raw = careerBtn.getAttribute("data-career");
-      handlers.onCareer?.(raw);
+    const autoTeamBtn = el.closest?.("[data-autoteam]");
+    if (autoTeamBtn) {
+      const [projectId, stageKey] = String(autoTeamBtn.getAttribute("data-autoteam") || "").split(":");
+      if (projectId && stageKey) handlers.onAutoTeam?.(projectId, stageKey);
       return;
     }
 
-    const shopBtn = el.closest?.("[data-shop]");
-    if (shopBtn) {
-      const raw = shopBtn.getAttribute("data-shop");
-      handlers.onShop?.(raw);
+    const abandonBtn = el.closest?.("[data-abandon]");
+    if (abandonBtn) {
+      const [kind, id] = String(abandonBtn.getAttribute("data-abandon") || "").split(":");
+      handlers.onAbandon?.(kind, id);
+      return;
+    }
+
+    const pmBtn = el.closest?.("[data-postmortem]");
+    if (pmBtn) {
+      const productId = String(pmBtn.getAttribute("data-postmortem") || "");
+      if (productId) handlers.onPostmortem?.(productId);
+      return;
+    }
+
+    const doneBtn = el.closest?.("[data-done-detail]");
+    if (doneBtn) {
+      const id = String(doneBtn.getAttribute("data-done-detail") || "");
+      if (id) handlers.onDoneDetail?.(id);
+      return;
+    }
+
+    const rBtn = el.closest?.("[data-research]");
+    if (rBtn) {
+      handlers.onResearch?.(String(rBtn.getAttribute("data-research") || ""));
       return;
     }
 
     const inboxBtn = el.closest?.("[data-inbox]");
     if (inboxBtn) {
-      const raw = inboxBtn.getAttribute("data-inbox");
-      handlers.onInbox?.(raw);
+      const [itemId, choiceKey] = String(inboxBtn.getAttribute("data-inbox") || "").split(":");
+      if (itemId && choiceKey) handlers.onInboxChoice?.(itemId, choiceKey);
       return;
     }
   });
 
-  const hoursSel = $("#hoursPerDay");
-  if (hoursSel) {
-    hoursSel.addEventListener("change", () => {
-      const next = parseInt(hoursSel.value, 10) || 8;
-      handlers.onHoursChange(next);
-    });
-  }
+  document.addEventListener("input", (ev) => {
+    const raw = ev.target;
+    const el = raw instanceof Element ? raw : raw?.parentElement;
+    if (!el) return;
 
-  const seasonSel = $("#seasonWeeks");
-  if (seasonSel) {
-    seasonSel.addEventListener("change", () => {
-      const next = parseInt(seasonSel.value, 10) || 52;
-      handlers.onSeasonChange?.(next);
-    });
-  }
+    const pref = el.getAttribute?.("data-stagepref");
+    if (pref) {
+      const [stage, key] = pref.split(":");
+      const v = parseInt(String(/** @type {HTMLInputElement} */ (el).value || "50"), 10);
+      handlers.onStagePrefChange?.(stage, key, v);
+      return;
+    }
 
-  const notifyAuto = () => {
-    handlers.onAutoChange?.({
-      enabled: Boolean($("#autoEnabled")?.checked),
-      focus: String($("#autoFocus")?.value || "balanced"),
-      autoEndWeek: Boolean($("#autoEndWeek")?.checked),
-      allowAcceptJob: Boolean($("#autoAllowAcceptJob")?.checked),
-      allowQuitJob: Boolean($("#autoAllowQuitJob")?.checked),
-      minStaminaPct: parseInt(String($("#autoMinSta")?.value || "35"), 10) || 35,
-      minMoodPct: parseInt(String($("#autoMinMood")?.value || "30"), 10) || 30,
+    const ops = el.getAttribute?.("data-ops");
+    if (ops) {
+      const [k, id] = ops.split(":");
+      const rawVal = /** @type {HTMLInputElement} */ (el).value;
+      handlers.onOpsChange?.(k, id, rawVal);
+      return;
+    }
+  });
+
+  document.addEventListener("change", (ev) => {
+    const raw = ev.target;
+    const el = raw instanceof Element ? raw : raw?.parentElement;
+    if (!el) return;
+    const assign = el.getAttribute?.("data-assign");
+    if (assign) {
+      const parts = assign.split(":");
+      const v = String(/** @type {HTMLSelectElement} */ (el).value || "");
+      if (parts.length === 3) {
+        const [projectId, stageKey, roleKey] = parts;
+        handlers.onAssign?.(projectId, stageKey, roleKey, v || null);
+      } else if (parts.length === 2) {
+        // backward compatible
+        const [projectId, roleKey] = parts;
+        handlers.onAssign?.(projectId, "S1", roleKey, v || null);
+      }
+      return;
+    }
+  });
+
+  const timeSpeed = $("#timeSpeed");
+  if (timeSpeed) {
+    timeSpeed.addEventListener("change", () => {
+      handlers.onTimeSpeedChange?.(parseFloat(String(timeSpeed.value || "1")) || 1);
     });
-  };
-  for (const id of ["autoEnabled", "autoFocus", "autoEndWeek", "autoAllowAcceptJob", "autoAllowQuitJob", "autoMinSta", "autoMinMood"]) {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener("change", notifyAuto);
   }
 
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") handlers.onCloseModal();
+    if (ev.key === "Escape") {
+      const overlay = document.getElementById("menuOverlay");
+      const menusOpen = overlay && !overlay.classList.contains("is-hidden");
+      if (menusOpen) {
+        closeMenus();
+        return;
+      }
+      handlers.onCloseModal?.();
+    }
   });
+
+  // Drag-to-pan for research graph (scroll container)
+  // IMPORTANT: research panel is rerendered often; use event delegation so it keeps working.
+  if (document.documentElement.dataset.researchDragPanBound !== "1") {
+    document.documentElement.dataset.researchDragPanBound = "1";
+
+    let dragging = false;
+    let activeEl = /** @type {HTMLElement|null} */ (null);
+    let startX = 0;
+    let startY = 0;
+    let startSL = 0;
+    let startST = 0;
+    let pointerId = null;
+
+    const stop = () => {
+      dragging = false;
+      pointerId = null;
+      if (activeEl) activeEl.classList.remove("is-dragging");
+      activeEl = null;
+    };
+
+    document.addEventListener("pointerdown", (ev) => {
+      const t = ev.target instanceof Element ? ev.target : null;
+      if (!t) return;
+      const el = t.closest?.(".researchGraph");
+      if (!el || !(el instanceof HTMLElement)) return;
+      // If user clicks a node, let the node handle it (no drag-pan).
+      if (t.closest?.(".rgnode")) return;
+      if (ev.button != null && ev.button !== 0) return; // left button only
+
+      dragging = true;
+      activeEl = el;
+      pointerId = ev.pointerId;
+      startX = ev.clientX;
+      startY = ev.clientY;
+      startSL = el.scrollLeft;
+      startST = el.scrollTop;
+      el.classList.add("is-dragging");
+      el.setPointerCapture?.(ev.pointerId);
+      ev.preventDefault();
+    });
+
+    document.addEventListener("pointermove", (ev) => {
+      if (!dragging || !activeEl) return;
+      if (pointerId != null && ev.pointerId !== pointerId) return;
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      activeEl.scrollLeft = startSL - dx;
+      activeEl.scrollTop = startST - dy;
+      ev.preventDefault();
+    }, { passive: false });
+
+    document.addEventListener("pointerup", stop);
+    document.addEventListener("pointercancel", stop);
+    window.addEventListener("blur", stop);
+  }
 }
 

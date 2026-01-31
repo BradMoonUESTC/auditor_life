@@ -1,1581 +1,1819 @@
-import { PROTOCOLS, DIRECT_CLIENTS, PLATFORM_NAMES, COMPANIES, SHOP_ITEMS } from "./content.js?v=57";
-import { clamp, pick, rnd, ri } from "./utils.js?v=57";
-import { adjustAfterAction, gainAP, healthCap, log, refreshAP, spendAP } from "./state.js?v=57";
-import { addCustomXPost } from "./xfeed.js?v=57";
-import { pickClientName, pickPlatformName, t } from "./i18n.js?v=57";
+import { clamp, pick, ri, rnd } from "./utils.js?v=57";
+import { clampPct, log, normalizeState } from "./state.js?v=57";
 
-function fmtCash(state, amount) {
-  const loc = state?.settings?.lang === "en" ? "en-US" : "zh-CN";
-  const n = Math.round(amount || 0);
-  return `¥${n.toLocaleString(loc)}`;
+// ===== Constants (MVP) =====
+
+export const CHAINS = [
+  { key: "evm_l2", name: "EVM L2" },
+  { key: "solana", name: "Solana" },
+  { key: "move", name: "Move 系" },
+];
+
+export const NARRATIVES = [
+  { key: "defi_summer", name: "DeFi Summer" },
+  { key: "rwa", name: "RWA 合规金融" },
+  { key: "ai_crypto", name: "AI x Crypto" },
+  { key: "privacy", name: "隐私叙事" },
+  { key: "degen", name: "Degen 投机叙事" },
+  { key: "security", name: "安全叙事" },
+];
+
+export const AUDIENCES = [
+  { key: "retail", name: "散户" },
+  { key: "whales", name: "鲸鱼/做市" },
+  { key: "institutions", name: "机构" },
+  { key: "developers", name: "开发者" },
+];
+
+export const ARCHETYPES = [
+  { key: "dex", name: "DEX/AMM" },
+  { key: "lending", name: "借贷（Lending）" },
+  { key: "perps", name: "永续/衍生品（Perps）" },
+  { key: "wallet", name: "钱包/AA（Wallet/AA）" },
+  { key: "rpc", name: "RPC/节点服务" },
+  { key: "indexer", name: "Indexer/数据服务" },
+  { key: "bridge", name: "跨链消息/桥" },
+];
+
+export const PLATFORMS = [
+  { key: "web", name: "Web" },
+  { key: "mobile", name: "Mobile" },
+  { key: "extension", name: "Browser Extension" },
+];
+
+// ===== Known combo match table (Archetype x Narrative/Chain/Audience) =====
+// 3 levels only: perfect / mid / bad
+export const MATCH_LEVEL = {
+  perfect: { key: "perfect", label: "完美匹配", tone: "good", pct: 95 },
+  mid: { key: "mid", label: "中等匹配", tone: "warn", pct: 70 },
+  bad: { key: "bad", label: "不匹配", tone: "bad", pct: 40 },
+};
+
+/** @type {Record<string, { narratives: Record<string,string>, chains: Record<string,string>, audiences: Record<string,string> }>} */
+export const KNOWN_MATCH_TABLE = {
+  dex: {
+    narratives: { defi_summer: "perfect", degen: "perfect", rwa: "bad", ai_crypto: "mid", privacy: "mid", security: "mid" },
+    chains: { evm_l2: "perfect", solana: "mid", move: "mid" },
+    audiences: { retail: "perfect", whales: "perfect", institutions: "mid", developers: "mid" },
+  },
+  lending: {
+    narratives: { defi_summer: "perfect", rwa: "perfect", degen: "mid", ai_crypto: "mid", privacy: "mid", security: "mid" },
+    chains: { evm_l2: "perfect", solana: "mid", move: "mid" },
+    audiences: { retail: "mid", whales: "perfect", institutions: "perfect", developers: "mid" },
+  },
+  perps: {
+    narratives: { degen: "perfect", defi_summer: "mid", rwa: "bad", ai_crypto: "mid", privacy: "bad", security: "mid" },
+    chains: { evm_l2: "perfect", solana: "perfect", move: "mid" },
+    audiences: { retail: "mid", whales: "perfect", institutions: "mid", developers: "mid" },
+  },
+  wallet: {
+    narratives: { privacy: "perfect", ai_crypto: "mid", defi_summer: "mid", degen: "mid", rwa: "mid", security: "perfect" },
+    chains: { evm_l2: "perfect", solana: "perfect", move: "mid" },
+    audiences: { retail: "perfect", whales: "mid", institutions: "mid", developers: "mid" },
+  },
+  rpc: {
+    narratives: { security: "perfect", ai_crypto: "mid", defi_summer: "mid", degen: "bad", rwa: "mid", privacy: "mid" },
+    chains: { evm_l2: "perfect", solana: "perfect", move: "perfect" },
+    audiences: { developers: "perfect", institutions: "mid", whales: "mid", retail: "bad" },
+  },
+  indexer: {
+    narratives: { ai_crypto: "perfect", security: "mid", defi_summer: "mid", rwa: "mid", privacy: "mid", degen: "bad" },
+    chains: { evm_l2: "perfect", solana: "perfect", move: "perfect" },
+    audiences: { developers: "perfect", institutions: "perfect", whales: "mid", retail: "bad" },
+  },
+  bridge: {
+    narratives: { defi_summer: "mid", degen: "mid", rwa: "mid", ai_crypto: "mid", privacy: "bad", security: "perfect" },
+    chains: { evm_l2: "perfect", solana: "mid", move: "mid" },
+    audiences: { retail: "mid", whales: "perfect", institutions: "mid", developers: "mid" },
+  },
+};
+
+function matchLevelKeyToObj(k) {
+  const kk = String(k || "");
+  return MATCH_LEVEL[kk] || MATCH_LEVEL.mid;
 }
 
-function ensureProgress(state) {
-  if (!state.progress) state.progress = { noOrderWeeks: 0, totalWeeks: 0, earnedTotal: 0, findingsTotal: 0 };
-  if (typeof state.progress.earnedTotal !== "number") state.progress.earnedTotal = 0;
-  if (typeof state.progress.findingsTotal !== "number") state.progress.findingsTotal = 0;
-  return state.progress;
-}
-
-function paceFactor(project) {
-  // 目标：4 周单子 2~3 周能审计到 100%，3~4 周能把报告/复测补齐
-  // 做法：按 deadlineWeeks 动态加速推进（越短越快），并给整体一个偏快的基准
-  const w = clamp(Math.round(project?.deadlineWeeks ?? 4), 1, 12);
-  return clamp(6.5 / w, 1.35, 2.8); // 4w=>1.6, 3w=>2.17, 2w=>2.8(封顶)
-}
-
-function ensureLeaderboards(state) {
-  if (!state.leaderboards) state.leaderboards = { playerPrev: { earnedTotal: 0, findingsTotal: 0 }, npcs: [] };
-  if (!state.leaderboards.playerPrev) state.leaderboards.playerPrev = { earnedTotal: 0, findingsTotal: 0 };
-  if (!state.leaderboards.playerWeek) state.leaderboards.playerWeek = { earnedWeek: 0, findingsWeek: 0 };
-  if (!Array.isArray(state.leaderboards.npcs)) state.leaderboards.npcs = [];
-  return state.leaderboards;
-}
-
-export function tickLeaderboards(state) {
-  const prog = ensureProgress(state);
-  const lb = ensureLeaderboards(state);
-
-  const prevEarn = Math.max(0, Math.round(lb.playerPrev.earnedTotal || 0));
-  const prevFind = Math.max(0, Math.round(lb.playerPrev.findingsTotal || 0));
-  const curEarn = Math.max(0, Math.round(prog.earnedTotal || 0));
-  const curFind = Math.max(0, Math.round(prog.findingsTotal || 0));
-
-  const playerEarnWeek = Math.max(0, curEarn - prevEarn);
-  const playerFindWeek = Math.max(0, curFind - prevFind);
-  lb.playerWeek.earnedWeek = playerEarnWeek;
-  lb.playerWeek.findingsWeek = playerFindWeek;
-
-  // 用玩家“本周增量”做锚点，NPC 增速尽量贴近玩家
-  const baseEarn = clamp(Math.round(playerEarnWeek > 0 ? playerEarnWeek : rnd(820, 1150)), 450, 1800);
-  const baseFind = clamp(Math.round(playerFindWeek > 0 ? playerFindWeek : rnd(0.8, 1.4)), 0, 3);
-
-  for (const n of lb.npcs || []) {
-    if (!n) continue;
-    if (typeof n.earnedTotal !== "number") n.earnedTotal = 0;
-    if (typeof n.findingsTotal !== "number") n.findingsTotal = 0;
-
-    let eg = Math.round(baseEarn * rnd(0.75, 1.25));
-    // 偶尔“爆单/爆赏金”
-    if (Math.random() < 0.08) eg += Math.round(baseEarn * rnd(1.2, 2.2));
-    eg = clamp(eg, 200, 4200);
-
-    let fg = Math.round(baseFind * rnd(0.65, 1.35) + rnd(-0.2, 0.9));
-    // 偶尔“爆 finding”
-    if (Math.random() < 0.06) fg += 1;
-    fg = clamp(fg, 0, 5);
-
-    n.earnedWeek = eg;
-    n.findingsWeek = fg;
-    n.earnedTotal = clamp(Math.round(n.earnedTotal + eg), 0, 999999999);
-    n.findingsTotal = clamp(Math.round(n.findingsTotal + fg), 0, 999999999);
-  }
-
-  lb.playerPrev.earnedTotal = curEarn;
-  lb.playerPrev.findingsTotal = curFind;
-}
-
-function levelPayMult(level) {
-  const l = Math.round(level || 1);
-  if (l <= 1) return 0.95;
-  if (l === 2) return 1.05;
-  return 1.2;
-}
-
-// 旧存档迁移：把“旧经济档（1k 周薪）”升级到“现实周薪（7k-13k）”，并补 workMode
-export function migrateCompensation(state) {
-  // job offers
-  const offers = state.market?.jobs || [];
-  for (const o of offers) {
-    const c = companyByKey(o.companyKey);
-    if (!o.workMode) o.workMode = c.workMode || "remote";
-    const isLowPayCompany = (c.payBandWeekly?.[1] ?? 999999) < 3000;
-    if (!isLowPayCompany && (typeof o.salaryWeekly !== "number" || o.salaryWeekly < 3000)) {
-      const band = c.payBandWeekly || [7000, 9000];
-      const mid = (band[0] + band[1]) / 2;
-      o.salaryWeekly = Math.round(mid * levelPayMult(o.levelOffer || 1));
-    }
-  }
-
-  // current employment
-  const e = state.employment;
-  if (e?.employed) {
-    const ck = e.companyKey;
-    if (ck) {
-      const c = companyByKey(ck);
-      if (!e.workMode) e.workMode = c.workMode || "remote";
-      const isLowPayCompany = (c.payBandWeekly?.[1] ?? 999999) < 3000;
-      if (!isLowPayCompany && (typeof e.salaryWeekly !== "number" || e.salaryWeekly < 3000)) {
-        const band = c.payBandWeekly || [7000, 9000];
-        const mid = (band[0] + band[1]) / 2;
-        e.salaryWeekly = Math.round(mid * levelPayMult(e.level || 1));
-      }
-    }
-  }
-}
-
-export function protocolName(protocolKey) {
-  return (PROTOCOLS.find((x) => x.key === protocolKey) || PROTOCOLS[0]).name;
-}
-
-// UI 用：根据当前语言返回协议展示名（优先 i18n，其次回退到 content.js 的 name）
-export function protocolLabel(state, protocolKey) {
-  const key = `protocol.${protocolKey}`;
-  const s = t(state, key);
-  if (s && s !== key) return s;
-  return protocolName(protocolKey);
-}
-
-export function protocolDiff(protocolKey) {
-  return (PROTOCOLS.find((x) => x.key === protocolKey) || PROTOCOLS[0]).diff;
-}
-
-// 项目复杂度（影响动作消耗与推进速度）
-export function complexityTier(project) {
-  const diff = protocolDiff(project.protocol);
-  const scope = project.scope || 0;
-  const score = scope + diff * 1.2;
-  if (score <= 65) return 1; // 简单
-  if (score <= 120) return 2; // 中等
-  return 3; // 复杂
-}
-
-export function actionCost(state, actionKey, target) {
-  const owned = (k) => clamp(Math.round(state?.shop?.owned?.[k] ?? 0), 0, 999);
-  const has = (k) => owned(k) > 0;
-  if (!target) {
-    if (actionKey === "model") return 3;
-    if (actionKey === "audit") return 2;
-    if (actionKey === "write") return 1;
-    if (actionKey === "aiResearch") return 1;
-    if (actionKey === "productizeAI") return 2;
-    if (actionKey === "incidentAnalysis") return 1;
-    if (actionKey === "fundTrace") return 1;
-    if (actionKey === "writeBrief") return 1;
-    if (actionKey === "postX") return 1;
-    if (actionKey === "tweet") return 1;
-    let base = 1;
-    if (actionKey === "model") base = 3;
-    if (actionKey === "audit") base = 2;
-    if (actionKey === "write") base = 1;
-    if (actionKey === "productizeAI") base = 2;
-    // Shop modifiers
-    if (has("tooling_suite") && ["audit", "model", "write"].includes(actionKey)) base -= 1;
-    if (has("better_chair") && ["meeting", "companyWork"].includes(actionKey)) base -= 1;
-    return clamp(base, 1, 8);
-  }
-  const tier = complexityTier(target);
-  const backlog =
-    target.kind === "direct"
-      ? target.found?.length || 0
-      : target.submissions?.filter((x) => x.status === "draft" || x.status === "submitted").length || 0;
-
-  let base = 1;
-  if (actionKey === "audit") base = tier === 1 ? 1 : tier === 2 ? 2 : 3;
-  if (actionKey === "model") base = tier === 1 ? 2 : tier === 2 ? 3 : 4;
-  if (actionKey === "retest") base = Math.max(1, (tier === 1 ? 1 : tier === 2 ? 2 : 3) - 1);
-  if (actionKey === "write") base = backlog >= 10 || tier === 3 ? 2 : 1;
-  if (actionKey === "companyWork") base = 2;
-  if (actionKey === "meeting") base = 1;
-  if (actionKey === "aiResearch") base = 1;
-  if (actionKey === "productizeAI") base = 2;
-  if (actionKey === "incidentAnalysis") base = 1;
-  if (actionKey === "fundTrace") base = 1;
-  if (actionKey === "writeBrief") base = 1;
-  if (actionKey === "postX") base = 1;
-  if (actionKey === "tweet") base = 1;
-
-  // Shop modifiers
-  if (has("tooling_suite") && ["audit", "model", "write", "retest", "submit"].includes(actionKey)) base -= 1;
-  if (has("better_chair") && ["meeting", "companyWork"].includes(actionKey)) base -= 1;
-  return clamp(base, 1, 8);
-}
-
-export function writeProgressInc(stats, target) {
-  // 更快：让 3~4 周能把报告/证据补齐
-  const base = Math.round(8 + stats.writing / 9);
-  if (!target) return base;
-  const tier = complexityTier(target);
-  const scope = target.scope || 0;
-  const backlog = target.kind === "direct" ? target.found?.length || 0 : target.submissions?.length || 0;
-  const speed = clamp(1.35 - backlog * 0.05 - scope * 0.0025 + (tier === 1 ? 0.12 : tier === 3 ? -0.12 : 0), 0.6, 1.55);
-  return clamp(Math.round(base * speed), 4, 26);
-}
-
-export function severityPoints(sev) {
-  if (sev === "S") return 10;
-  if (sev === "H") return 6;
-  if (sev === "M") return 3;
-  if (sev === "L") return 1;
-  return 0;
-}
-
-export function makeVulnPool(protocolKey, scope) {
-  const diff = protocolDiff(protocolKey) + scope * 0.4;
-  const severe = clamp(Math.round(rnd(0, diff / 40)), 0, 3);
-  const high = clamp(Math.round(rnd(1, diff / 22)), 1, 6);
-  const medium = clamp(Math.round(rnd(2, diff / 14)), 2, 10);
-  const low = clamp(Math.round(rnd(2, diff / 10)), 2, 14);
-  return { S: severe, H: high, M: medium, L: low };
-}
-
-export function makeDirectOrder(state, forceClientKey) {
-  const proto = pick(PROTOCOLS);
-  const scope = ri(18, 80);
-  const deadline = ri(2, 5);
-  const cooperation = ri(35, 85);
-  const adversary = ri(15, 75);
-  // client：加入一个“穷 DAO（web3dao）”的直客甲方：按周 ¥700 发单
-  // 其它甲方：维持“单周收入≈1000、生活费700/周”有压力的区间
-  const clientKey = forceClientKey ?? (Math.random() < 0.22 ? "web3dao" : clamp(Math.floor(Math.random() * 6) + 1, 1, 6));
-
-  let fee = 0;
-  if (clientKey === "web3dao") {
-    fee = Math.round(700 * deadline);
-  } else {
-    // 大致：2~5 周项目，总价 ~2000~5000
-    const baseFee = 700 + scope * 28 + proto.diff * 12;
-    const rush = deadline <= 2 ? 1.25 : 1;
-    fee = Math.round(baseFee * rush);
-  }
+export function knownComboBreakdown(archetype, narrative, chain, audience) {
+  const a = String(archetype || "");
+  const t = KNOWN_MATCH_TABLE[a] || null;
+  const nKey = t?.narratives?.[String(narrative || "")] || "mid";
+  const cKey = t?.chains?.[String(chain || "")] || "mid";
+  const uKey = t?.audiences?.[String(audience || "")] || "mid";
+  const n = matchLevelKeyToObj(nKey);
+  const c = matchLevelKeyToObj(cKey);
+  const u = matchLevelKeyToObj(uKey);
+  const pct = Math.round((n.pct + c.pct + u.pct) / 3);
   return {
-    id: `D_${Date.now()}_${ri(100, 999)}`,
-    kind: "direct",
-    clientKey,
-    title: t(state, "direct.title", { client: t(state, `client.${clientKey}`), protocol: t(state, `protocol.${proto.key}`) }),
-    protocol: proto.key,
-    scope,
-    deadlineWeeks: deadline,
-    cooperation,
-    adversary,
-    fee,
-    notes: clientKey === "web3dao" ? t(state, "direct.notes.dao", { perWeek: fmtCash(state, 700) }) : t(state, deadline <= 2 ? "direct.notes.rush" : "direct.notes.normal"),
+    narrative: { key: n.key, label: n.label, tone: n.tone, pct: n.pct },
+    chain: { key: c.key, label: c.label, tone: c.tone, pct: c.pct },
+    audience: { key: u.key, label: u.label, tone: u.tone, pct: u.pct },
+    pct,
   };
 }
 
-export function makePlatformContest(state) {
-  const proto = pick(PROTOCOLS);
-  const scope = ri(20, 90);
-  const duration = ri(1, 3);
-  const popularity = ri(30, 95);
-  // 奖池更“真实”：每场总奖池几万~几十万；去重/solo 会显著影响个人到手
-  const basePrize = 22000 + scope * 1400 + proto.diff * 900; // ~3w 起步
-  const hypeMul = 1 + popularity / 120; // 热度越高总池子越大
-  const prizePool = clamp(Math.round(basePrize * hypeMul), 30000, 450000);
-  // 氛围用：整场（有效）finding 总量，别比玩家离谱太多（结算时会再“按玩家成绩”约束 share）
-  const totalFindingsHint = clamp(Math.round(4 + scope / 12 + proto.diff / 18 + popularity / 25), 6, 28);
-  const platformKeys = ["sherlock", "code4rena", "cantina"];
-  const platformKey = platformKeys[Math.floor(Math.random() * platformKeys.length)];
-  const platform = t(state, `platform.${platformKey}`);
+// ===== Secondary development (product upgrades) =====
 
-  return {
-    id: `P_${Date.now()}_${ri(100, 999)}`,
-    kind: "platform",
-    platformKey,
-    platform,
-    title: t(state, "platform.title", { platform, protocol: t(state, `protocol.${proto.key}`) }),
-    protocol: proto.key,
-    scope,
-    deadlineWeeks: duration,
-    popularity,
-    prizePool,
-    totalFindingsHint,
-    notes:
-      popularity >= 75
-        ? t(state, "platform.notes.hot")
-        : t(state, "platform.notes.normal"),
-  };
+export const UPGRADE_CATALOG = {
+  wallet: [
+    {
+      key: "wallet_add_dex",
+      title: "内置 DEX 功能",
+      desc: "把钱包做成“钱包 + 交易”的一体化入口：开始产生 TVL/Volume/手续费。",
+      targetArchetype: "dex",
+      scoreDelta: { growth: +6, productFit: +4, techQuality: +3, security: -2, compliance: -1 },
+      unlockKpi: { tvl: true, volume: true, fee: true },
+    },
+  ],
+  dex: [
+    {
+      key: "dex_add_wallet",
+      title: "集成 AA / 内置钱包入口",
+      desc: "降低门槛，提高转化与留存（更像“产品化”）。",
+      targetArchetype: "wallet",
+      scoreDelta: { growth: +4, productFit: +6, techQuality: +2, security: -1, compliance: 0 },
+    },
+  ],
+  lending: [
+    {
+      key: "lending_add_perps",
+      title: "加上永续合约（Perps）",
+      desc: "提高交易量与手续费，但风险画像更尖锐。",
+      targetArchetype: "perps",
+      scoreDelta: { growth: +5, productFit: +2, techQuality: +2, security: -3, compliance: -2 },
+    },
+  ],
+  perps: [
+    {
+      key: "perps_add_lending",
+      title: "加上借贷/保证金体系",
+      desc: "更完整的金融闭环，提升粘性。",
+      targetArchetype: "lending",
+      scoreDelta: { growth: +3, productFit: +3, techQuality: +2, security: -2, compliance: -1 },
+    },
+  ],
+  rpc: [
+    {
+      key: "rpc_add_indexer",
+      title: "加上 Indexer/数据服务",
+      desc: "从“节点”升级到“数据平台”，商业化更强。",
+      targetArchetype: "indexer",
+      scoreDelta: { growth: +3, productFit: +3, techQuality: +4, security: -1, compliance: 0 },
+    },
+  ],
+  indexer: [
+    {
+      key: "indexer_add_rpc",
+      title: "加上 RPC/SLA 服务",
+      desc: "形成端到端基础设施产品线。",
+      targetArchetype: "rpc",
+      scoreDelta: { growth: +2, productFit: +2, techQuality: +4, security: -1, compliance: 0 },
+    },
+  ],
+  bridge: [
+    {
+      key: "bridge_add_wallet",
+      title: "钱包入口 + 跨链体验",
+      desc: "把跨链能力做成面向用户的产品化入口。",
+      targetArchetype: "wallet",
+      scoreDelta: { growth: +4, productFit: +4, techQuality: +2, security: -2, compliance: -1 },
+    },
+  ],
+};
+
+export function upgradeOptionsForProduct(prod) {
+  const base = String(prod?.archetype || "");
+  return Array.isArray(UPGRADE_CATALOG[base]) ? UPGRADE_CATALOG[base] : [];
 }
 
-export function seedMarket(state, fresh = false) {
-  const nDirect = 5;
-  const nPlat = 3;
-  if (fresh) {
-    state.market.direct = [];
-    state.market.platform = [];
-    state.market.jobs = [];
-  }
-  while (state.market.direct.length < nDirect) state.market.direct.push(makeDirectOrder(state));
-  // 保底：每周至少出现 1 个 web3dao 的“穷单子”（否则玩家可能刷不到）
-  const hasDaoClient = state.market.direct.some((o) => o?.kind === "direct" && o.clientKey === "web3dao");
-  if (!hasDaoClient && state.market.direct.length > 0) {
-    state.market.direct[state.market.direct.length - 1] = makeDirectOrder(state, "web3dao");
-  }
-  while (state.market.platform.length < nPlat) state.market.platform.push(makePlatformContest(state));
-  seedJobMarket(state, false);
+// Each archetype has a "recipe" preference for 3 stages.
+// Values 0~100. Matching matters (like GDT sliders).
+const RECIPE = {
+  dex: {
+    S1: { uxVsMech: 45, decentralVsControl: 55, complianceVsAggro: 35 },
+    S2: { onchainVsOffchain: 65, buildVsReuse: 55, speedVsQuality: 50 },
+    S3: { securityDepthVsSpeed: 65, monitoringVsFeatures: 70, complianceVsMarketing: 35 },
+  },
+  lending: {
+    S1: { uxVsMech: 35, decentralVsControl: 60, complianceVsAggro: 55 },
+    S2: { onchainVsOffchain: 70, buildVsReuse: 60, speedVsQuality: 60 },
+    S3: { securityDepthVsSpeed: 80, monitoringVsFeatures: 75, complianceVsMarketing: 55 },
+  },
+  perps: {
+    S1: { uxVsMech: 30, decentralVsControl: 55, complianceVsAggro: 40 },
+    S2: { onchainVsOffchain: 55, buildVsReuse: 55, speedVsQuality: 65 },
+    S3: { securityDepthVsSpeed: 85, monitoringVsFeatures: 85, complianceVsMarketing: 40 },
+  },
+  wallet: {
+    S1: { uxVsMech: 70, decentralVsControl: 55, complianceVsAggro: 60 },
+    S2: { onchainVsOffchain: 35, buildVsReuse: 55, speedVsQuality: 50 },
+    S3: { securityDepthVsSpeed: 75, monitoringVsFeatures: 60, complianceVsMarketing: 65 },
+  },
+  rpc: {
+    S1: { uxVsMech: 40, decentralVsControl: 65, complianceVsAggro: 55 },
+    S2: { onchainVsOffchain: 10, buildVsReuse: 45, speedVsQuality: 70 },
+    S3: { securityDepthVsSpeed: 60, monitoringVsFeatures: 90, complianceVsMarketing: 55 },
+  },
+  indexer: {
+    S1: { uxVsMech: 55, decentralVsControl: 60, complianceVsAggro: 45 },
+    S2: { onchainVsOffchain: 15, buildVsReuse: 50, speedVsQuality: 65 },
+    S3: { securityDepthVsSpeed: 55, monitoringVsFeatures: 85, complianceVsMarketing: 40 },
+  },
+  bridge: {
+    S1: { uxVsMech: 25, decentralVsControl: 60, complianceVsAggro: 45 },
+    S2: { onchainVsOffchain: 55, buildVsReuse: 60, speedVsQuality: 70 },
+    S3: { securityDepthVsSpeed: 90, monitoringVsFeatures: 90, complianceVsMarketing: 45 },
+  },
+};
+
+export const STAGE_DIMS = {
+  S1: [
+    { key: "uxVsMech", left: "产品体验", right: "机制深度" },
+    { key: "decentralVsControl", left: "去中心化叙事", right: "可控性" },
+    { key: "complianceVsAggro", left: "合规保守", right: "增长激进" },
+  ],
+  S2: [
+    { key: "onchainVsOffchain", left: "链上逻辑", right: "链下服务" },
+    { key: "buildVsReuse", left: "自研", right: "复用/依赖" },
+    { key: "speedVsQuality", left: "速度", right: "代码质量" },
+  ],
+  S3: [
+    { key: "securityDepthVsSpeed", left: "安全深度", right: "上线速度" },
+    { key: "monitoringVsFeatures", left: "监控/应急", right: "功能完善" },
+    { key: "complianceVsMarketing", left: "合规/材料", right: "市场攻势" },
+  ],
+};
+
+// ===== Inbox events (optional weekly choices) =====
+
+function weeksBetween(a, b) {
+  // a/b: {year, week}
+  if (!a || !b) return 0;
+  const ay = Math.round(a.year || 0);
+  const aw = Math.round(a.week || 0);
+  const by = Math.round(b.year || 0);
+  const bw = Math.round(b.week || 0);
+  return (by - ay) * 52 + (bw - aw);
 }
 
-export function itemCount(state, key) {
-  return clamp(Math.round(state?.shop?.owned?.[key] ?? 0), 0, 999);
+function pruneInbox(state) {
+  normalizeState(state);
+  const now = state.now || { year: 0, week: 0 };
+  state.inbox.items = (state.inbox.items || []).filter((it) => {
+    const age = weeksBetween(it.created, now);
+    const ttl = clamp(Math.round(it.expiresInWeeks || 2), 1, 8);
+    return age >= 0 && age < ttl;
+  });
 }
 
-export function hasItem(state, key) {
-  return itemCount(state, key) > 0;
-}
-
-export function buyItem(state, key) {
-  const it = SHOP_ITEMS.find((x) => x.key === key);
-  if (!it) return { ok: false, msg: state.settings?.lang === "en" ? "Unknown item." : "未知物品。" };
-  const owned = itemCount(state, key);
-  if (it.once && owned > 0) return { ok: false, msg: state.settings?.lang === "en" ? "Already owned." : "该物品已拥有。" };
-  if (state.stats.cash < it.cost) return { ok: false, msg: state.settings?.lang === "en" ? "Not enough cash." : "现金不足。" };
-  state.stats.cash -= it.cost;
-  if (!state.shop) state.shop = { owned: {} };
-  if (!state.shop.owned) state.shop.owned = {};
-  state.shop.owned[key] = owned + 1;
-  log(state, `${t(state, `shop.item.${key}.name`)} ${state.settings?.lang === "en" ? "purchased." : "已购买。"} `, "good");
-  return { ok: true };
-}
-
-export function useItem(state, key) {
-  const it = SHOP_ITEMS.find((x) => x.key === key);
-  if (!it) return { ok: false, msg: state.settings?.lang === "en" ? "Unknown item." : "未知物品。" };
-  if (it.kind !== "consumable") return { ok: false, msg: state.settings?.lang === "en" ? "Not consumable." : "该物品不是消耗品。" };
-  const owned = itemCount(state, key);
-  if (owned <= 0) return { ok: false, msg: state.settings?.lang === "en" ? "You don't have it." : "你没有这个物品。" };
-
-  if (key === "therapy_session") {
-    const cap = healthCap(state);
-    adjustAfterAction(state, { mood: Math.round(cap * 0.18) });
-    log(state, state.settings?.lang === "en" ? "Therapy session: mood restored." : "你做了一次心理咨询：心态回了一口。", "good");
-  }
-  if (key === "training_pack") {
-    const gain = () => (Math.random() < 0.5 ? 1 : 2);
-    adjustAfterAction(state, { skill: gain(), tooling: gain(), writing: gain(), comms: gain() });
-    log(state, state.settings?.lang === "en" ? "Training pack: small stat gains." : "你刷完了一套训练营：属性小幅提升。", "good");
-  }
-
-  state.shop.owned[key] = owned - 1;
-  return { ok: true };
-}
-
-function companyByKey(key) {
-  return COMPANIES.find((c) => c.key === key) || COMPANIES[0];
-}
-
-export function seedJobMarket(state, fresh = false) {
-  if (!state.market) state.market = { direct: [], platform: [], jobs: [] };
-  if (!Array.isArray(state.market.jobs)) state.market.jobs = [];
-  if (fresh) state.market.jobs = [];
-  const want = 5;
-  // 确保能刷到「磐石安全实验室 / the web3 dao」
-  const hasDao = state.market.jobs.some((x) => x.companyKey === "web3dao");
-  if (!hasDao) state.market.jobs.unshift(makeJobOffer(state, "web3dao"));
-
-  // Yubit：用户希望更频繁出现（作为“非远程 + 租房成本”的典型公司），这里做一个保底
-  const hasYubit = state.market.jobs.some((x) => x.companyKey === "yubit");
-  if (!hasYubit) {
-    // 尽量放在 dao 之后，避免把 dao 挤掉
-    const idx = state.market.jobs[0]?.companyKey === "web3dao" ? 1 : 0;
-    state.market.jobs.splice(idx, 0, makeJobOffer(state, "yubit"));
-  }
-
-  while (state.market.jobs.length > want) state.market.jobs.pop();
-  while (state.market.jobs.length < want) state.market.jobs.push(makeJobOffer(state));
-}
-
-export function makeJobOffer(state, forceCompanyKey) {
-  const c = forceCompanyKey ? companyByKey(forceCompanyKey) : pick(COMPANIES);
-  const rep = state.stats.reputation || 0;
-  const plat = state.stats.platformRating || 0;
-  const net = state.stats.network || 0;
-  const score = rep + plat + Math.round(net / 2);
-  let levelOffer = 1;
-  if (score >= 90) levelOffer = 3;
-  else if (score >= 55) levelOffer = 2;
-
-  // 交易所更挑人：合规风险高/冲突风险高时更容易给低档
-  if (c.type === "exchange") {
-    if ((state.stats.compliance || 0) > 45) levelOffer = Math.max(1, levelOffer - 1);
-    if ((state.conflict?.risk || 0) > 35) levelOffer = Math.max(1, levelOffer - 1);
-  }
-
-  const [min, max] = c.payBandWeekly;
-  const salaryWeekly = Math.round(rnd(min, max) * (levelOffer === 1 ? 0.95 : levelOffer === 2 ? 1.05 : 1.2));
-  const id = `J_${Date.now()}_${ri(100, 999)}`;
-  const notes = t(state, c.type === "exchange" ? "job.notes.exchange" : "job.notes.sec");
-
-  return {
+function pushInbox(state, def, payload = {}, expiresInWeeks = 2) {
+  normalizeState(state);
+  pruneInbox(state);
+  const id = `in_${Date.now()}_${ri(1000, 9999)}`;
+  state.inbox.items.unshift({
     id,
-    kind: "job",
-    companyKey: c.key,
-    companyName: t(state, `company.${c.key}.name`),
-    companyType: c.type,
-    workMode: c.workMode || "remote",
-    complianceStrict: c.complianceStrict,
-    processMaturity: c.processMaturity,
-    culture: c.culture,
-    shipUrgency: c.shipUrgency,
-    levelOffer,
-    salaryWeekly,
-    title: t(state, c.type === "exchange" ? "job.title.exchange" : "job.title.sec"),
-    notes,
-  };
+    def,
+    created: { ...(state.now || { year: 0, week: 0 }) },
+    expiresInWeeks: clamp(Math.round(expiresInWeeks || 2), 1, 8),
+    payload: payload && typeof payload === "object" ? payload : {},
+  });
+  state.inbox.items = state.inbox.items.slice(0, 30);
+  return id;
 }
 
-export function acceptJob(state, offerId) {
-  const offer = (state.market.jobs || []).find((x) => x.id === offerId);
-  if (!offer) return { ok: false, msg: t(state, "msg.offerExpired") };
-  const c = companyByKey(offer.companyKey);
-  state.employment.employed = true;
-  state.employment.companyKey = c.key;
-  state.employment.companyName = t(state, `company.${c.key}.name`);
-  state.employment.companyType = c.type;
-  state.employment.workMode = offer.workMode || c.workMode || "remote";
-  state.employment.level = offer.levelOffer;
-  state.employment.salaryWeekly = offer.salaryWeekly;
-  state.employment.weeksEmployed = 0;
-  state.employment.promoProgress = 0;
-  // YH 入职后 3 周内必定触发一次“恶心事件”
-  state.employment.yhToxicTriggered = false;
-  state.employment.performance = clamp(state.employment.performance ?? 50, 0, 100);
-  state.employment.trust = clamp(state.employment.trust ?? 50, 0, 100);
+export const INBOX_DEFS = {
+  wallet_distribution: {
+    title: "钱包入口合作机会",
+    desc: (state, payload) => {
+      const cost = Math.round(payload.cost || 0);
+      const inc = Math.round(payload.communityInc || 0);
+      return `某钱包 BD 主动联系：愿意给你一个入口位（冷启动友好）。代价是一次性合作费 ¥${cost.toLocaleString("zh-CN")}。预计社区势能 +${inc}。`;
+    },
+    choices: [
+      {
+        key: "take",
+        label: "签合作（花钱换增长）",
+        primary: true,
+        apply: (state, payload) => {
+          const cost = Math.max(0, Math.round(payload.cost || 0));
+          const inc = Math.max(0, Math.round(payload.communityInc || 0));
+          if ((state.resources?.cash ?? 0) < cost) {
+            log(state, "你想签合作，但现金不够。", "bad");
+            return { ok: false, msg: "现金不足" };
+          }
+          state.resources.cash -= cost;
+          state.resources.community = clampPct((state.resources.community || 0) + inc);
+          state.resources.network = clampPct((state.resources.network || 0) + ri(1, 3));
+          log(state, `签下钱包入口合作：社区势能 +${inc}（花费 ¥${cost.toLocaleString("zh-CN")}）。`, "good");
+          return { ok: true };
+        },
+      },
+      {
+        key: "skip",
+        label: "先不签（保现金）",
+        apply: (state) => {
+          state.resources.network = clampPct((state.resources.network || 0) + 1);
+          log(state, "你选择暂缓：先把产品做稳。", "info");
+          return { ok: true };
+        },
+      },
+    ],
+  },
+  security_review: {
+    title: "安全公司审计报价",
+    desc: (state, payload) => {
+      const cost = Math.round(payload.cost || 0);
+      const down = Math.round(payload.securityDown || 0);
+      return `一家安全公司给出快速审计/赏金方案，报价 ¥${cost.toLocaleString("zh-CN")}。预计全局安全风险 -${down}（更不容易翻车）。`;
+    },
+    choices: [
+      {
+        key: "buy",
+        label: "采购安全服务",
+        primary: true,
+        apply: (state, payload) => {
+          const cost = Math.max(0, Math.round(payload.cost || 0));
+          const down = Math.max(0, Math.round(payload.securityDown || 0));
+          if ((state.resources?.cash ?? 0) < cost) {
+            log(state, "你想采购安全服务，但现金不够。", "bad");
+            return { ok: false, msg: "现金不足" };
+          }
+          state.resources.cash -= cost;
+          state.resources.securityRisk = clampPct((state.resources.securityRisk || 0) - down);
+          log(state, `采购安全服务：安全风险 -${down}（花费 ¥${cost.toLocaleString("zh-CN")}）。`, "good");
+          return { ok: true };
+        },
+      },
+      {
+        key: "skip",
+        label: "先不做（等上线后再说）",
+        apply: (state) => {
+          state.resources.securityRisk = clampPct((state.resources.securityRisk || 0) + 1);
+          log(state, "你选择先不做：把时间留给功能与上线。", "warn");
+          return { ok: true };
+        },
+      },
+    ],
+  },
+  regulator_ping: {
+    title: "监管风向：材料抽查",
+    desc: (state, payload) => {
+      const cost = Math.round(payload.cost || 0);
+      const down = Math.round(payload.complianceDown || 0);
+      return `某渠道要求你补交合规材料（KYC/免责声明/地区限制说明等）。外包法务报价 ¥${cost.toLocaleString("zh-CN")}。预计合规风险 -${down}。`;
+    },
+    choices: [
+      {
+        key: "do",
+        label: "做合规材料（稳）",
+        primary: true,
+        apply: (state, payload) => {
+          const cost = Math.max(0, Math.round(payload.cost || 0));
+          const down = Math.max(0, Math.round(payload.complianceDown || 0));
+          if ((state.resources?.cash ?? 0) < cost) {
+            log(state, "你想补材料，但现金不够。", "bad");
+            return { ok: false, msg: "现金不足" };
+          }
+          state.resources.cash -= cost;
+          state.resources.complianceRisk = clampPct((state.resources.complianceRisk || 0) - down);
+          state.resources.reputation = clampPct((state.resources.reputation || 0) + 1);
+          log(state, `合规材料补齐：合规风险 -${down}（花费 ¥${cost.toLocaleString("zh-CN")}）。`, "good");
+          return { ok: true };
+        },
+      },
+      {
+        key: "ignore",
+        label: "先不管（赌窗口期）",
+        apply: (state) => {
+          state.resources.complianceRisk = clampPct((state.resources.complianceRisk || 0) + ri(2, 5));
+          log(state, "你选择先不管：窗口期最重要。", "warn");
+          return { ok: true };
+        },
+      },
+    ],
+  },
+  prod_incident: {
+    title: "线上事故：漏洞/宕机",
+    desc: (state, payload) => {
+      const title = String(payload.title || "某产品");
+      const loss = Math.round(payload.loss || 0);
+      return `线上出现事故苗头：${title} 被社区质疑（或出现间歇性宕机/异常交易）。如果处理不当，本周可能造成现金损失约 ¥${loss.toLocaleString("zh-CN")} 以及声誉下滑。`;
+    },
+    choices: [
+      {
+        key: "hotfix",
+        label: "紧急热修（花钱止损）",
+        primary: true,
+        apply: (state, payload) => {
+          const productId = String(payload.productId || "");
+          const loss = Math.max(0, Math.round(payload.loss || 0));
+          const cost = Math.round(loss * 0.45);
+          if ((state.resources?.cash ?? 0) < cost) {
+            log(state, "你想热修，但现金不够，只能硬扛。", "bad");
+            return { ok: false, msg: "现金不足" };
+          }
+          const prod = (state.active?.products || []).find((x) => x.id === productId);
+          if (prod?.risk) {
+            prod.risk.security = clampPct((prod.risk.security || 0) - ri(12, 22));
+          }
+          state.resources.cash -= cost;
+          state.resources.reputation = clampPct((state.resources.reputation || 0) + 1);
+          state.resources.securityRisk = clampPct((state.resources.securityRisk || 0) - ri(2, 5));
+          log(state, `紧急热修完成：花费 ¥${cost.toLocaleString("zh-CN")}，舆情暂时压住。`, "good");
+          return { ok: true };
+        },
+      },
+      {
+        key: "ignore",
+        label: "先观望（省钱但风险↑）",
+        apply: (state, payload) => {
+          const loss = Math.max(0, Math.round(payload.loss || 0));
+          state.resources.cash = Math.round((state.resources.cash || 0) - Math.round(loss * 0.6));
+          state.resources.reputation = clampPct((state.resources.reputation || 0) - ri(2, 4));
+          state.resources.securityRisk = clampPct((state.resources.securityRisk || 0) + ri(3, 6));
+          log(state, "你选择观望：社区情绪开始变差。", "bad");
+          return { ok: true };
+        },
+      },
+    ],
+  },
+};
 
-  // 交易所更容易刷到“阿里味/恶心 KPI”
-  if (c.type === "exchange") {
-    state.employment.manager = { archetype: "pua", toxicity: ri(60, 90) };
-    state.employment.vanityKpi = { mode: pick(["loc", "refactor"]), intensity: ri(55, 85) };
-    state.employment.politics = clamp((state.employment.politics ?? 20) + ri(20, 35), 0, 100);
-  } else {
-    state.employment.manager = { archetype: "delivery", toxicity: ri(15, 45) };
-    state.employment.vanityKpi = { mode: "none", intensity: 0 };
-    state.employment.politics = clamp((state.employment.politics ?? 20) + ri(5, 15), 0, 100);
-  }
+export function applyInboxChoice(state, itemId, choiceKey) {
+  normalizeState(state);
+  pruneInbox(state);
+  const it = (state.inbox.items || []).find((x) => x.id === itemId);
+  if (!it) return { ok: false, msg: "该事件已过期/不存在。" };
+  const def = INBOX_DEFS[it.def];
+  if (!def) return { ok: false, msg: "未知事件类型。" };
+  const choice = (def.choices || []).find((c) => c.key === choiceKey);
+  if (!choice) return { ok: false, msg: "未知选项。" };
+  const r = choice.apply?.(state, it.payload || {}) || { ok: true };
+  // 无论成功与否，玩家做了选择就算处理过（避免卡住）
+  state.inbox.items = (state.inbox.items || []).filter((x) => x.id !== itemId);
+  return r;
+}
 
-  state.conflict.risk = clamp((state.conflict?.risk ?? 0) + (c.type === "exchange" ? 8 : 4), 0, 100);
-  log(
-    state,
-    t(state, "log.job.accepted", {
-      company: t(state, `company.${c.key}.name`),
-      level: offer.levelOffer,
-      salary: offer.salaryWeekly.toLocaleString(state.settings?.lang === "en" ? "en-US" : "zh-CN"),
-    }),
-    c.type === "exchange" ? "warn" : "good"
+function maybeGenerateInboxWeekly(state) {
+  normalizeState(state);
+  pruneInbox(state);
+  const r = state.resources || {};
+  const products = state.active?.products || [];
+
+  // 控制频率：每周 0~2 条
+  let quota = 0;
+  if (Math.random() < 0.35) quota += 1;
+  if (Math.random() < 0.12) quota += 1;
+  quota = clamp(quota, 0, 2);
+  if (quota === 0) return;
+
+  const candidates = [];
+  candidates.push(() =>
+    pushInbox(state, "wallet_distribution", { cost: ri(18_000, 65_000), communityInc: ri(4, 10) }, 2)
   );
-  state.market.jobs = (state.market.jobs || []).filter((x) => x.id !== offerId);
-  // 入职后立刻发一批 company tickets，避免“空窗”
-  ensureCompanyTickets(state);
-  ensureSelection(state);
-  return { ok: true };
-}
+  candidates.push(() =>
+    pushInbox(state, "security_review", { cost: ri(12_000, 48_000), securityDown: ri(4, 10) }, 2)
+  );
+  candidates.push(() =>
+    pushInbox(state, "regulator_ping", { cost: ri(8_000, 36_000), complianceDown: ri(4, 9) }, 2)
+  );
 
-export function quitJob(state) {
-  if (!state.employment?.employed) return { ok: false, msg: t(state, "msg.notEmployed") };
-  const name = state.employment.companyName;
-  state.employment.employed = false;
-  state.employment.companyKey = null;
-  state.employment.companyName = null;
-  state.employment.companyType = null;
-  state.employment.salaryWeekly = 0;
-  state.employment.weeksEmployed = 0;
-  state.employment.yhToxicTriggered = false;
-  state.employment.promoProgress = 0;
-  state.employment.politics = clamp((state.employment.politics ?? 20) - 25, 0, 100);
-  adjustAfterAction(state, { mood: +2 });
-
-  // 离职后：公司任务不应继续存在
-  if (Array.isArray(state.active?.company)) state.active.company = [];
-  // 如果当前选中的是公司任务，清掉并让系统重新选一个有效目标（直客/平台）
-  if (state.selectedTarget?.kind === "company") state.selectedTarget = null;
-  ensureSelection(state);
-
-  log(state, t(state, "log.job.quit", { company: name }), "info");
-  return { ok: true };
-}
-
-export function requestRemoteWork(state) {
-  if (!state.employment?.employed) return { ok: false, msg: t(state, "msg.notEmployed") };
-  if ((state.employment.workMode || "remote") === "remote") return { ok: false, msg: t(state, "msg.remote.already") };
-
-  const ck = String(state.employment.companyKey || "");
-  const companyName = state.employment.companyName || "";
-
-  // Yubit：永远失败（讽刺一下）
-  if (ck === "yubit") {
-    state.employment.politics = clamp((state.employment.politics ?? 20) + ri(2, 6), 0, 100);
-    state.employment.trust = clamp((state.employment.trust ?? 50) - ri(1, 4), 0, 100);
-    log(state, t(state, "log.remote.yubit.fail", { company: companyName }), "bad");
-    return { ok: true };
-  }
-
-  // 其它公司：看信任/政治，给一个偏容易的成功率
-  const trust = clamp(state.employment.trust ?? 50, 0, 100);
-  const politics = clamp(state.employment.politics ?? 20, 0, 100);
-  const chance = clamp(0.7 + trust / 250 - politics / 400, 0.35, 0.92);
-
-  if (Math.random() < chance) {
-    state.employment.workMode = "remote";
-    state.employment.trust = clamp(trust + ri(1, 4), 0, 100);
-    state.employment.politics = clamp(politics - ri(1, 3), 0, 100);
-    log(state, t(state, "log.remote.success", { company: companyName }), "good");
-    return { ok: true };
-  }
-
-  state.employment.trust = clamp(trust - ri(1, 3), 0, 100);
-  state.employment.politics = clamp(politics + ri(2, 5), 0, 100);
-  log(state, t(state, "log.remote.fail", { company: companyName }), "warn");
-  return { ok: true };
-}
-
-export function makeCompanyTicket(state) {
-  const types = ["design_review", "pr_review", "monitoring", "incident", "training", "compliance", "security_tooling"];
-  const tt = pick(types);
-  const scope = ri(10, 70);
-  const deadlineWeeks = ri(1, 3);
-  const impact = ri(30, 90);
-  return {
-    id: `C_${Date.now()}_${ri(100, 999)}`,
-    kind: "company",
-    ticketType: tt,
-    title: t(state, "project.company.title", { type: t(state, `company.ticketType.${tt}`), scope }),
-    protocol: pick(PROTOCOLS).key,
-    scope,
-    deadlineWeeks,
-    impact,
-    risk: ri(20, 80),
-    progress: 0,
-  };
-}
-
-export function ensureCompanyTickets(state) {
-  if (!state.employment?.employed) return;
-  if (!Array.isArray(state.active.company)) state.active.company = [];
-  const want = 2;
-  while (state.active.company.length < want) state.active.company.push(makeCompanyTicket(state));
-}
-
-export function tickMajorIncident(state) {
-  if (!state.world) state.world = { majorIncidentCooldown: 0 };
-  if (state.world.majorIncidentCooldown > 0) state.world.majorIncidentCooldown -= 1;
-
-  if (state.majorIncident?.active) {
-    state.majorIncident.weeksLeft -= 1;
-    if (state.majorIncident.weeksLeft < 0) {
-      log(state, t(state, "log.major.expired", { title: state.majorIncident.title }), "warn");
-      state.majorIncident = null;
-      state.world.majorIncidentCooldown = ri(8, 18);
-    }
-    return;
-  }
-
-  if (!state.majorIncident && state.world.majorIncidentCooldown <= 0) {
-    const p = 0.08;
-    if (Math.random() < p) {
-      const kinds = [
-        { k: "bridge_hack" },
-        { k: "oracle_fail" },
-        { k: "governance_attack" },
-        { k: "key_leak" },
-      ];
-      const pickOne = pick(kinds);
-      const title = t(state, `major.title.${pickOne.k}`);
-      state.majorIncident = {
-        active: true,
-        kind: pickOne.k,
-        title,
-        spawnedAt: { ...state.now },
-        weeksLeft: ri(1, 2),
-        progress: { analysis: 0, tracing: 0, writeup: 0, xThread: 0 },
-        published: { done: false, weekOffset: null },
-      };
-      log(state, t(state, "log.major.spawned", { title, weeks: state.majorIncident.weeksLeft }), "warn");
-    }
-  }
-}
-
-export function careerAdvanceWeek(state) {
-  if (state.employment?.employed) {
-    const rentWeekly = 1000;
-    state.employment.weeksEmployed = clamp(Math.round((state.employment.weeksEmployed || 0) + 1), 0, 5200);
-    if (!state.progress) state.progress = { noOrderWeeks: 0, totalWeeks: 0, earnedTotal: 0, findingsTotal: 0 };
-    const sal = Math.round(state.employment.salaryWeekly || 0);
-    state.stats.cash += sal;
-    state.progress.earnedTotal = (state.progress.earnedTotal || 0) + Math.max(0, sal);
-    log(
-      state,
-      t(state, "log.salary.received", {
-        amount: sal.toLocaleString(state.settings?.lang === "en" ? "en-US" : "zh-CN"),
-      }),
-      "good"
-    );
-    ensureCompanyTickets(state);
-
-    // 非远程：租房成本（每周）
-    if ((state.employment.workMode || "remote") !== "remote") {
-      state.stats.cash -= rentWeekly;
-      log(
-        state,
-        t(state, "log.rent.paid", {
-          amount: Math.round(rentWeekly).toLocaleString(state.settings?.lang === "en" ? "en-US" : "zh-CN"),
-        }),
-        "warn"
-      );
-    }
-
-    // 晋升：目标让玩家“10 周左右能升职”，并且声望/平台评级越高越快
-    // base: 1/周；bonus: (rep+plat)/120 => 0~1；最终约 1~2/周
-    const promoTarget = 10;
-    const rep = clamp(state.stats.reputation ?? 0, 0, 100);
-    const plat = clamp(state.stats.platformRating ?? 0, 0, 100);
-    const bonus = clamp((rep + plat) / 120, 0, 1);
-    const gain = clamp(1 + bonus, 1, 2);
-    state.employment.promoProgress = clamp((state.employment.promoProgress ?? 0) + gain, 0, 999);
-
-    // 目前先做 3 级上限（与 offer levelOffer 对齐）
-    while (state.employment.level < 3 && state.employment.promoProgress >= promoTarget) {
-      state.employment.promoProgress -= promoTarget;
-      const from = state.employment.level;
-      state.employment.level = clamp(from + 1, 1, 3);
-      const oldSalary = Math.round(state.employment.salaryWeekly || 0);
-      // 升一级：工资上调（安全公司更“涨得快”，交易所更慢但更稳定）
-      const mul = state.employment.companyType === "exchange" ? 1.12 : 1.18;
-      state.employment.salaryWeekly = Math.round(oldSalary * mul);
-      state.employment.trust = clamp((state.employment.trust ?? 50) + 3, 0, 100);
-      state.employment.performance = clamp((state.employment.performance ?? 50) + 2, 0, 100);
-      log(
-        state,
-        t(state, "log.promo.up", {
-          company: state.employment.companyName || "",
-          from,
-          to: state.employment.level,
-          salary: state.employment.salaryWeekly.toLocaleString(state.settings?.lang === "en" ? "en-US" : "zh-CN"),
-        }),
-        "good"
+  // 线上事故：需要至少 1 个产品，且风险较高时更可能出现
+  if (products.length > 0) {
+    const risky = products
+      .map((p) => ({ p, s: clampPct(p.risk?.security ?? 0) }))
+      .sort((a, b) => b.s - a.s)[0];
+    if (risky && (risky.s >= 55 || (r.securityRisk || 0) >= 55) && Math.random() < clamp(risky.s / 120, 0.1, 0.65)) {
+      candidates.push(() =>
+        pushInbox(
+          state,
+          "prod_incident",
+          { productId: risky.p.id, title: risky.p.title, loss: ri(18_000, 120_000) },
+          1
+        )
       );
     }
   }
-  seedJobMarket(state, false);
-  tickMajorIncident(state);
+
+  // 按资源状态做一点偏置：现金少时减少“花钱事件”密度
+  const shuffled = candidates.sort(() => Math.random() - 0.5);
+  let added = 0;
+  for (const gen of shuffled) {
+    if (added >= quota) break;
+    if ((state.resources?.cash ?? 0) < 25_000 && Math.random() < 0.45) continue;
+    gen();
+    added += 1;
+  }
+  if (added > 0) log(state, `收件箱新增 ${added} 条事件（可选处理，不会打断时间）。`, "info");
 }
+
+// ===== Selection helpers =====
 
 export function ensureSelection(state) {
   if (!state.selectedTarget) {
-    const d = state.active.direct[0];
-    const p = state.active.platform[0];
-    const c = state.active.company?.[0];
-    if (d) state.selectedTarget = { kind: "direct", id: d.id };
-    else if (p) state.selectedTarget = { kind: "platform", id: p.id };
-    else if (c) state.selectedTarget = { kind: "company", id: c.id };
+    const p = state.active?.projects?.[0];
+    const prod = state.active?.products?.[0];
+    if (p) state.selectedTarget = { kind: "project", id: p.id };
+    else if (prod) state.selectedTarget = { kind: "product", id: prod.id };
   }
 }
 
 export function findTarget(state, kind, id) {
-  const list = kind === "direct" ? state.active.direct : kind === "platform" ? state.active.platform : state.active.company || [];
-  return list.find((x) => x.id === id) || null;
+  const list = kind === "product" ? state.active.products : state.active.projects;
+  return (list || []).find((x) => x.id === id) || null;
 }
 
-export function activateDirect(state, order) {
-  if (state.active.direct.length >= 2) return { ok: false, msg: t(state, "msg.limit.direct") };
-  const depositPct = clamp(order.depositPct ?? 0.2, 0.1, 0.5);
-  const project = {
-    ...order,
-    stage: "active",
-    depositPct,
-    coverage: 0,
-    report: { draft: 0, delivered: false },
-    fixRate: clamp(Math.round(rnd(35, 75) + (order.cooperation - 50) * 0.35), 0, 100),
-    shipUrgency: clamp(ri(25, 90) + (order.deadlineWeeks <= 2 ? 8 : 0), 0, 100),
-    retestScore: 0,
-    pool: makeVulnPool(order.protocol, order.scope),
-    found: [],
-    undiscovered: null,
+// ===== Market generation =====
+
+function titleOf(archetype, narrative) {
+  const a = ARCHETYPES.find((x) => x.key === archetype)?.name || archetype;
+  const n = NARRATIVES.find((x) => x.key === narrative)?.name || narrative;
+  return `${n} · ${a}`;
+}
+
+function makeProjectOpportunity() {
+  const archetype = pick(ARCHETYPES).key;
+  const chain = pick(CHAINS).key;
+  const narrative = pick(NARRATIVES).key;
+  const audience = pick(AUDIENCES).key;
+  const platform = pick(PLATFORMS).key;
+
+  const scale = ri(1, 3); // 1 small, 2 medium, 3 large
+  const estWeeks = scale === 1 ? ri(3, 5) : scale === 2 ? ri(5, 8) : ri(8, 12);
+  const baseBudget = scale === 1 ? ri(12000, 26000) : scale === 2 ? ri(28000, 68000) : ri(80000, 160000);
+
+  return {
+    id: `PRJ_${Date.now()}_${ri(100, 999)}`,
+    kind: "project",
+    title: titleOf(archetype, narrative),
+    archetype,
+    narrative,
+    chain,
+    audience,
+    platform,
+    scale,
+    estWeeks,
+    budget: baseBudget,
+    // simple fee model (for onchain protocols)
+    feeRateBps: archetype === "rpc" || archetype === "indexer" ? 0 : ri(5, 35), // 0.05%~0.35%
+    takeRatePct: 0.35, // protocol treasury take
+    prefs: JSON.parse(JSON.stringify(RECIPE[archetype] || RECIPE.dex)),
+    notes: scale === 3 ? "高难度：工期长、事故代价更大。" : scale === 2 ? "中等难度：需要兼顾质量与进度。" : "小项目：适合快速回本与试配方。",
   };
-  project.undiscovered = { ...project.pool };
-  state.active.direct.push(project);
-  state.market.direct = state.market.direct.filter((x) => x.id !== order.id);
-  const deposit = Math.round(order.fee * depositPct);
-  state.stats.cash += deposit; // 定金
-  if (!state.progress) state.progress = { noOrderWeeks: 0, totalWeeks: 0, earnedTotal: 0, findingsTotal: 0 };
-  state.progress.earnedTotal = (state.progress.earnedTotal || 0) + Math.max(0, deposit);
-  state.stats.compliance = clamp(state.stats.compliance + (order.scope > 70 ? 1 : 0), 0, 100);
-  log(
-    state,
-    t(state, "log.accept.direct", {
-      title: order.title,
-      deposit: deposit.toLocaleString(state.settings?.lang === "en" ? "en-US" : "zh-CN"),
-    })
-  );
-  ensureSelection(state);
+}
+
+function makeCandidate() {
+  const names = ["小王", "小李", "小赵", "小周", "小陈", "小吴"];
+  const name = pick(names) + ri(1, 99);
+  const skew = rnd(0.85, 1.15);
+  const mk = (base) => clampPct(base * skew + rnd(-6, 6));
+  const perks = [
+    { key: "spec_security", name: "安全老兵", desc: "安全专精：安全 +18", bonus: { security: 18 } },
+    { key: "spec_contract", name: "合约硬核", desc: "合约专精：合约 +18", bonus: { contract: 18 } },
+    { key: "spec_growth", name: "增长黑客", desc: "增长专精：增长 +18", bonus: { growth: 18 } },
+    { key: "spec_product", name: "产品嗅觉", desc: "产品专精：产品 +18", bonus: { product: 18 } },
+    { key: "researcher", name: "研究狂人", desc: "研发速度 +25%（作为负责人）", researchSpeedMul: 1.25 },
+    { key: "frugal", name: "节俭体质", desc: "日常杂费 -200/天", livingCostDelta: -200 },
+  ];
+  const perk = pick(perks);
+  const skills = {
+    product: mk(ri(20, 70)),
+    design: mk(ri(20, 70)),
+    protocol: mk(ri(20, 70)),
+    contract: mk(ri(20, 70)),
+    infra: mk(ri(20, 70)),
+    security: mk(ri(20, 70)),
+    growth: mk(ri(20, 70)),
+    compliance: mk(ri(10, 55)),
+  };
+
+  // 薪资：按能力定价（低属性尽量低），范围 200~3000/天
+  const keys = Object.keys(skills);
+  const avg = keys.reduce((acc, k) => acc + clampPct(skills[k]), 0) / Math.max(1, keys.length); // 0~100
+  const t = clamp(avg / 100, 0, 1);
+  let salaryDaily = 200 + Math.pow(t, 2.2) * 2800; // 200~3000
+  // perk 溢价：专精/研究加成会更贵一点
+  const bonusSum =
+    perk?.bonus && typeof perk.bonus === "object"
+      ? Object.values(perk.bonus).reduce((a, v) => a + Math.max(0, Math.round(Number(v) || 0)), 0)
+      : 0;
+  let premium = 1 + Math.min(0.25, bonusSum / 200); // +18 => ~+9%
+  if (typeof perk?.researchSpeedMul === "number" && perk.researchSpeedMul > 1) premium *= 1.12;
+  // 少量随机波动（同档位有差异）
+  salaryDaily = salaryDaily * premium * rnd(0.92, 1.08);
+  salaryDaily = clamp(Math.round(salaryDaily), 200, 3000);
+  const salaryWeekly = salaryDaily * 7;
+
+  return {
+    id: `H_${Date.now()}_${ri(100, 999)}`,
+    kind: "hire",
+    name,
+    salaryWeekly,
+    skills,
+    trait: Math.random() < 0.33 ? "学得快" : Math.random() < 0.5 ? "稳健" : "冲劲",
+    perk,
+  };
+}
+
+export function seedMarket(state, fresh = false) {
+  normalizeState(state);
+  if (fresh) {
+    state.market.projects = [];
+    state.market.hires = [];
+  }
+  while (state.market.projects.length < 5) state.market.projects.push(makeProjectOpportunity());
+  while (state.market.hires.length < 4) state.market.hires.push(makeCandidate());
+  // cap
+  state.market.projects = state.market.projects.slice(0, 8);
+  state.market.hires = state.market.hires.slice(0, 8);
+}
+
+export function exploreCandidates(state, sourceKey) {
+  normalizeState(state);
+  const key = String(sourceKey || "");
+  const cash = state.resources?.cash ?? 0;
+
+  const sources = {
+    headhunter: { name: "猎头", cost: ri(32_000, 55_000), n: ri(1, 2), qualityMul: 1.10, salaryMul: 1.12 },
+    jobboard: { name: "招聘平台", cost: ri(9_000, 18_000), n: ri(1, 3), qualityMul: 1.00, salaryMul: 1.00 },
+    referral: { name: "朋友介绍", cost: ri(3_000, 9_000), n: ri(1, 1), qualityMul: 1.05, salaryMul: 0.95 },
+  };
+  const src = sources[key];
+  if (!src) return { ok: false, msg: "未知探索渠道。" };
+  if (cash < src.cost) return { ok: false, msg: `现金不足：需要 ¥${src.cost.toLocaleString("zh-CN")}。` };
+
+  if (!state.market) state.market = { projects: [], hires: [] };
+  if (!Array.isArray(state.market.hires)) state.market.hires = [];
+
+  const tweak = (c) => {
+    if (!c || typeof c !== "object") return c;
+    const s = c.skills || {};
+    for (const k of Object.keys(s)) s[k] = clampPct(clampPct(s[k]) * src.qualityMul + rnd(-2, 3));
+    c.skills = s;
+    c.salaryWeekly = Math.max(0, Math.round((Number(c.salaryWeekly) || 0) * src.salaryMul * rnd(0.98, 1.05)));
+    return c;
+  };
+
+  const added = [];
+  for (let i = 0; i < src.n; i += 1) added.push(tweak(makeCandidate()));
+
+  state.resources.cash -= src.cost;
+  // add to front
+  state.market.hires = [...added, ...state.market.hires].slice(0, 8);
+
+  log(state, `探索候选人：通过${src.name}获得 ${added.length} 位候选人（花费 ¥${src.cost.toLocaleString("zh-CN")}）。`, "info");
+  return { ok: true, addedCount: added.length, cost: src.cost, sourceName: src.name };
+}
+
+// ===== Project lifecycle =====
+
+export function projectStage(project) {
+  const idx = clamp(Math.round(project?.stageIndex ?? 0), 0, 2);
+  return idx === 0 ? "S1" : idx === 1 ? "S2" : "S3";
+}
+
+function defaultStagePrefs() {
+  return {
+    S1: { uxVsMech: 50, decentralVsControl: 50, complianceVsAggro: 50 },
+    S2: { onchainVsOffchain: 50, buildVsReuse: 50, speedVsQuality: 50 },
+    S3: { securityDepthVsSpeed: 50, monitoringVsFeatures: 50, complianceVsMarketing: 50 },
+  };
+}
+
+export function startProject(state, id) {
+  normalizeState(state);
+  const src = state.market.projects.find((x) => x.id === id);
+  if (!src) return { ok: false, msg: "该项目已过期。" };
+  if ((state.active.projects?.length || 0) >= 2) return { ok: false, msg: "同时进行的项目太多了（上限 2）。" };
+
+  const p = {
+    ...src,
+    stageIndex: 0,
+    stageProgress: 0,
+    stagePaused: true, // stage gate
+    stagePrefs: defaultStagePrefs(),
+    stageTeam: {
+      S1: { product: null, design: null, protocol: null, compliance: null },
+      S2: { contract: null, infra: null, security: null, protocol: null },
+      S3: { security: null, infra: null, compliance: null, growth: null },
+    },
+    startedAt: { ...state.now },
+    // runtime accumulators
+    investedBudget: 0,
+  };
+  state.active.projects.push(p);
+  state.market.projects = state.market.projects.filter((x) => x.id !== id);
+  state.selectedTarget = { kind: "project", id: p.id };
+
+  // push stage gate to queue
+  state.stageQueue = state.stageQueue || [];
+  state.stageQueue.push({ kind: "project", id: p.id });
+
+  log(state, `立项：${p.title}（${p.estWeeks} 周，预算 ¥${Math.round(p.budget).toLocaleString("zh-CN")}）`, "good");
   return { ok: true };
 }
 
-export function activatePlatform(state, contest) {
-  if (state.active.platform.length >= 1) return { ok: false, msg: t(state, "msg.limit.platform") };
-  const project = {
-    ...contest,
-    stage: "active",
-    coverage: 0,
-    evidence: 0,
-    submissions: [],
-    pool: makeVulnPool(contest.protocol, contest.scope),
-    undiscovered: null,
-  };
-  project.undiscovered = { ...project.pool };
-  state.active.platform.push(project);
-  state.market.platform = state.market.platform.filter((x) => x.id !== contest.id);
-  log(state, t(state, "log.accept.platform", { title: contest.title, weeks: contest.deadlineWeeks }));
-  ensureSelection(state);
+export function abandonProject(state, projectId) {
+  normalizeState(state);
+  const id = String(projectId || "");
+  const p = (state.active?.projects || []).find((x) => x.id === id) || null;
+  if (!p) return { ok: false, msg: "找不到该进行中的项目。" };
+
+  state.active.projects = (state.active.projects || []).filter((x) => x.id !== id);
+  // remove pending stage gate entries
+  if (Array.isArray(state.stageQueue)) state.stageQueue = state.stageQueue.filter((x) => !(x?.kind === "project" && x?.id === id));
+
+  if (state.selectedTarget?.kind === "project" && state.selectedTarget?.id === id) {
+    state.selectedTarget = null;
+  }
+
+  const spent = Math.round(Number(p.investedBudget) || 0);
+  const pct = clamp(Math.round(p.stageProgress || 0), 0, 100);
+  log(state, `废弃项目：${p.title}（已投入 ¥${spent.toLocaleString("zh-CN")}，当前进度 ${pct}%）`, "warn");
   return { ok: true };
 }
 
-export function discover(state, project, mode) {
-  const st = state.stats;
-  const scopePenalty = project.scope / 140;
-  const skill = st.skill / 100;
-  const tooling = st.tooling / 100;
-  const stamina = st.stamina / 100;
-  const base = mode === "audit" ? 0.32 : mode === "model" ? 0.22 : 0.18;
-  const p = clamp(base + skill * 0.25 + tooling * 0.12 + stamina * 0.1 - scopePenalty * 0.12, 0.06, 0.75);
-
-  const found = [];
-  const pool = project.undiscovered || {};
-  const tries = mode === "model" ? 2 : 3;
-  for (let i = 0; i < tries; i++) {
-    if (Math.random() > p) continue;
-    const keys = ["S", "H", "M", "L"].filter((k) => (pool[k] || 0) > 0);
-    if (!keys.length) break;
-    const sev = keys[ri(0, keys.length - 1)];
-    pool[sev] -= 1;
-    const points = severityPoints(sev);
-    found.push({
-      id: `${project.kind}_${Date.now()}_${ri(100, 999)}`,
-      sev,
-      points,
-      status: project.kind === "platform" ? "draft" : "found",
-    });
+export function createProject(state, cfg) {
+  normalizeState(state);
+  if ((state.active.projects?.length || 0) >= 2) return { ok: false, msg: "同时进行的项目太多了（上限 2）。" };
+  // secondary dev (upgrade existing product) OR new project
+  const baseProductId = cfg?.baseProductId ? String(cfg.baseProductId) : "";
+  const baseProd = baseProductId ? (state.active?.products || []).find((x) => x.id === baseProductId) : null;
+  const upgradeKey = cfg?.upgradeKey ? String(cfg.upgradeKey) : "";
+  if (baseProd) {
+    const opts = upgradeOptionsForProduct(baseProd);
+    if (!opts || opts.length === 0) return { ok: false, msg: "该产品暂无可用二次开发方向。" };
+    const picked = opts.find((x) => x.key === upgradeKey) || null;
+    if (!picked) return { ok: false, msg: "请选择有效的二次开发方向。" };
   }
 
-  if (project.kind === "platform") {
-    project.submissions.push(...found.map((x) => ({ ...x, status: "draft" })));
-  } else {
-    project.found.push(...found.map((x) => ({ id: x.id, sev: x.sev, points: x.points, status: "found" })));
-  }
-  if (!state.progress) state.progress = { noOrderWeeks: 0, totalWeeks: 0, earnedTotal: 0, findingsTotal: 0 };
-  if (found.length > 0) state.progress.findingsTotal = (state.progress.findingsTotal || 0) + found.length;
-  return found;
-}
+  const archetype = baseProd ? (upgradeOptionsForProduct(baseProd).find((x) => x.key === upgradeKey)?.targetArchetype || baseProd.archetype) : (cfg?.archetype || pick(ARCHETYPES).key);
+  const chain = baseProd ? baseProd.chain : (cfg?.chain || pick(CHAINS).key);
+  const narrative = baseProd ? baseProd.narrative : (cfg?.narrative || pick(NARRATIVES).key);
+  const audience = baseProd ? baseProd.audience : (cfg?.audience || pick(AUDIENCES).key);
+  const platform = baseProd ? (baseProd.platform || "web") : (cfg?.platform || pick(PLATFORMS).key);
+  const scale = clamp(Math.round(cfg?.scale || 1), 1, 3);
+  const estWeeks = scale === 1 ? ri(3, 5) : scale === 2 ? ri(5, 8) : ri(8, 12);
+  const baseBudget = scale === 1 ? ri(12000, 26000) : scale === 2 ? ri(28000, 68000) : ri(80000, 160000);
+  const feeRateBps = ["rpc", "indexer"].includes(archetype) ? 0 : ri(5, 35);
+  const upgrade = baseProd ? upgradeOptionsForProduct(baseProd).find((x) => x.key === upgradeKey) : null;
 
-export function coverageGain(state, project, mode) {
-  const st = state.stats;
-  const skill = st.skill / 100;
-  const tooling = st.tooling / 100;
-  const stamina = st.stamina / 100;
-  // 更快：审计/建模/复测整体再提速
-  const base = mode === "audit" ? 16 : mode === "model" ? 11 : 10;
-  const tier = complexityTier(project);
-  const tierMul = tier === 1 ? 1.15 : tier === 3 ? 0.9 : 1;
-  const pace = paceFactor(project);
-  const gain = base * tierMul * pace * (0.7 + skill * 0.8 + tooling * 0.6) * (0.7 + stamina * 0.6) * (1 - project.scope / 220);
-  return clamp(Math.round(gain), 6, mode === "audit" ? 34 : 28);
-}
-
-export function labelOfStat(k) {
-  const map = {
-    skill: "审计能力",
-    comms: "沟通能力",
-    writing: "写作能力",
-    tooling: "工具链",
-    stamina: "精力",
-    mood: "心态",
-    cash: "现金",
-    reputation: "声望",
-    brand: "名声",
-    compliance: "合规风险",
-    network: "关系网",
-    platformRating: "平台评级",
+  const p = {
+    id: `PRJ_${Date.now()}_${ri(100, 999)}`,
+    kind: "project",
+    title: baseProd && upgrade ? `${baseProd.title} · 二次开发：${upgrade.title}` : titleOf(archetype, narrative),
+    archetype,
+    narrative,
+    chain,
+    audience,
+    platform,
+    scale,
+    estWeeks,
+    budget: baseBudget,
+    feeRateBps,
+    takeRatePct: 0.35,
+    prefs: JSON.parse(JSON.stringify(RECIPE[archetype] || RECIPE.dex)),
+    notes: scale === 3 ? "高难度：工期长、事故代价更大。" : scale === 2 ? "中等难度：需要兼顾质量与进度。" : "小项目：适合快速回本与试配方。",
+    stageIndex: 0,
+    stageProgress: 0,
+    stagePaused: true,
+    stagePrefs: defaultStagePrefs(),
+    stageTeam: {
+      S1: { product: null, design: null, protocol: null, compliance: null },
+      S2: { contract: null, infra: null, security: null, protocol: null },
+      S3: { security: null, infra: null, compliance: null, growth: null },
+    },
+    startedAt: { ...state.now },
+    investedBudget: 0,
+    // upgrade metadata (optional)
+    upgradeOf: baseProd ? baseProd.id : null,
+    upgradeKey: baseProd ? upgradeKey : null,
   };
-  return map[k] || k;
+  state.active.projects.push(p);
+  state.selectedTarget = { kind: "project", id: p.id };
+  state.stageQueue = state.stageQueue || [];
+  state.stageQueue.push({ kind: "project", id: p.id });
+  log(state, baseProd ? `二次开发立项：${p.title}（预计 ${estWeeks} 周，预算 ¥${Math.round(p.budget).toLocaleString("zh-CN")}）` : `立项：${p.title}（规模 L${scale}，预计 ${estWeeks} 周，预算 ¥${Math.round(p.budget).toLocaleString("zh-CN")}）`, "good");
+  return { ok: true, id: p.id };
 }
 
-export function doAction(state, actionKey, toast) {
-  const actionName = t(state, `action.${actionKey}.name`);
-  if (!actionName) return;
-  ensureSelection(state);
-  const target = state.selectedTarget ? findTarget(state, state.selectedTarget.kind, state.selectedTarget.id) : null;
-  const cost = actionCost(state, actionKey, target);
+export function hire(state, id) {
+  normalizeState(state);
+  const c = state.market.hires.find((x) => x.id === id);
+  if (!c) return { ok: false, msg: "候选人已过期。" };
+  // signing fee
+  const signFee = Math.round(c.salaryWeekly * 1.2);
+  if ((state.resources?.cash ?? 0) < signFee) return { ok: false, msg: "现金不足：付不起签约成本。" };
+  state.resources.cash -= signFee;
+  state.team.members.push({
+    id: `m_${c.id}`,
+    name: c.name,
+    role: "staff",
+    salaryWeekly: c.salaryWeekly,
+    skills: c.skills,
+    trait: c.trait,
+    perk: c.perk || null,
+  });
+  state.market.hires = state.market.hires.filter((x) => x.id !== id);
+  log(state, `招募：${c.name}（周薪 ¥${c.salaryWeekly.toLocaleString("zh-CN")}，签约 ¥${signFee.toLocaleString("zh-CN")}）`, "info");
+  return { ok: true };
+}
 
-  if (!spendAP(state, cost)) {
-    toast?.(t(state, "msg.apNotEnough", { cost }));
-    return;
+export function setProjectTeam(state, projectId, stageKey, roleKey, memberIdOrNull) {
+  normalizeState(state);
+  const p = state.active.projects.find((x) => x.id === projectId);
+  if (!p) return { ok: false, msg: "项目不存在。" };
+  if (!p.stageTeam || typeof p.stageTeam !== "object") {
+    p.stageTeam = {
+      S1: { product: null, design: null, protocol: null, compliance: null },
+      S2: { contract: null, infra: null, security: null, protocol: null },
+      S3: { security: null, infra: null, compliance: null, growth: null },
+    };
   }
+  if (!p.stageTeam[stageKey]) p.stageTeam[stageKey] = {};
+  p.stageTeam[stageKey][roleKey] = memberIdOrNull || null;
+  return { ok: true };
+}
 
-  if (
-    (actionKey === "audit" ||
-      actionKey === "model" ||
-      actionKey === "write" ||
-      actionKey === "retest" ||
-      actionKey === "comms" ||
-      actionKey === "submit" ||
-      actionKey === "companyWork" ||
-      actionKey === "meeting") &&
-    !target
-  ) {
-    toast?.(t(state, "msg.noActiveTarget"));
-    gainAP(state, cost);
-    return;
+export function autoAssignProjectStageTeam(state, projectId, stageKeyOrNull = null) {
+  normalizeState(state);
+  const p = state.active.projects.find((x) => x.id === projectId);
+  if (!p) return { ok: false, msg: "项目不存在。" };
+  const stageKey = stageKeyOrNull ? String(stageKeyOrNull) : projectStage(p);
+  const roles =
+    stageKey === "S1"
+      ? ["product", "design", "protocol", "compliance"]
+      : stageKey === "S2"
+        ? ["contract", "infra", "security", "protocol"]
+        : ["security", "infra", "compliance", "growth"];
+
+  const members = state.team?.members || [];
+  const scoreOf = (m, roleKey) => {
+    const base = clampPct(m?.skills?.[roleKey] ?? 0);
+    const bonus = clampPct(m?.perk?.bonus?.[roleKey] ?? 0);
+    return clampPct(base + bonus);
+  };
+
+  const used = new Set();
+  if (!p.stageTeam || typeof p.stageTeam !== "object") {
+    p.stageTeam = {
+      S1: { product: null, design: null, protocol: null, compliance: null },
+      S2: { contract: null, infra: null, security: null, protocol: null },
+      S3: { security: null, infra: null, compliance: null, growth: null },
+    };
   }
+  if (!p.stageTeam[stageKey]) p.stageTeam[stageKey] = {};
 
-  const st = state.stats;
-
-  if (actionKey === "audit" || actionKey === "model" || actionKey === "retest") {
-    const gain = coverageGain(state, target, actionKey === "audit" ? "audit" : actionKey === "model" ? "model" : "retest");
-    target.coverage = clamp(target.coverage + gain, 0, 100);
-
-    const found = discover(state, target, actionKey === "audit" ? "audit" : actionKey === "model" ? "model" : "retest");
-    const sevText = found.length ? found.map((x) => x.sev).join("") : "";
-
-    const tier = complexityTier(target);
-    // 血厚一点：单次动作的精力/心态消耗整体下调（极端工时仍会靠周末惩罚“收回来”）
-    const fatigue = actionKey === "model" ? -4 - (tier - 1) : -3 - (tier - 1);
-    const moodCost = actionKey === "model" ? -2 - (tier - 1) : -1 - (tier - 1);
-    adjustAfterAction(state, { stamina: fatigue, mood: moodCost });
-
-    if (target.kind === "platform") {
-      log(
-        state,
-        t(state, found.length ? "log.action.coverage.platform.found" : "log.action.coverage.platform.none", {
-          title: target.title,
-          action: actionName,
-          gain,
-          n: found.length,
-          sev: sevText,
-        })
-      );
-    } else {
-      if (actionKey === "retest") {
-        const rt = Math.round(16 * paceFactor(target));
-        target.retestScore = clamp((target.retestScore || 0) + rt, 0, 100);
+  const picked = {};
+  for (const roleKey of roles) {
+    let best = null;
+    let bestScore = -1;
+    for (const m of members) {
+      const raw = scoreOf(m, roleKey);
+      const penalty = used.has(m.id) ? 8 : 0; // prefer unique people if possible
+      const v = raw - penalty;
+      if (v > bestScore) {
+        bestScore = v;
+        best = m;
       }
-      log(
-        state,
-        t(state, found.length ? "log.action.coverage.direct.found" : "log.action.coverage.direct.none", {
-          title: target.title,
-          action: actionName,
-          gain,
-          n: found.length,
-          sev: sevText,
-        })
-      );
+    }
+    if (best) {
+      p.stageTeam[stageKey][roleKey] = best.id;
+      picked[roleKey] = best.id;
+      used.add(best.id);
     }
   }
+  return { ok: true, stageKey, picked };
+}
 
-  if (actionKey === "write") {
-    let inc = writeProgressInc(st, target);
-    if (hasItem(state, "report_templates")) inc = clamp(Math.round(inc * 1.15), 1, 30);
-    // 工期越短，写作/证据推进越快；整体也略加速（避免“4 周都写不完”）
-    inc = clamp(Math.round(inc * paceFactor(target)), 2, 45);
-    const tier = complexityTier(target);
-    if (target.kind === "direct") {
-      target.report.draft = clamp(target.report.draft + inc, 0, 100);
-      adjustAfterAction(state, { stamina: -1 - (tier - 1), mood: 0 });
-      log(state, t(state, "log.action.write.report", { title: target.title, inc }));
-    } else {
-      target.evidence = clamp((target.evidence || 0) + inc, 0, 100);
-      target.coverage = clamp(target.coverage + 1, 0, 100);
-      adjustAfterAction(state, { stamina: -1 - (tier - 1), mood: 0 });
-      log(state, t(state, "log.action.platform.evidence", { title: target.title, inc }));
-    }
+function avgSkill(memberIds, key, state) {
+  const ids = (memberIds || []).filter(Boolean);
+  if (ids.length === 0) return 0;
+  const map = new Map((state.team?.members || []).map((m) => [m.id, m]));
+  let sum = 0;
+  let n = 0;
+  for (const id of ids) {
+    const m = map.get(id);
+    if (!m) continue;
+    const base = clampPct(m.skills?.[key] ?? 0);
+    const bonus = clampPct(m.perk?.bonus?.[key] ?? 0);
+    sum += clampPct(base + bonus);
+    n += 1;
+  }
+  return n ? sum / n : 0;
+}
+
+function stageRoles(stage) {
+  if (stage === "S1") return ["product", "design", "protocol", "compliance"];
+  if (stage === "S2") return ["contract", "infra", "security", "protocol"];
+  return ["security", "infra", "compliance", "growth"]; // S3
+}
+
+function effectiveTeamPower(project, state) {
+  const stage = projectStage(project);
+  const t = project.stageTeam?.[stage] || {};
+  const roles = stageRoles(stage);
+  const ids = roles.map((r) => t?.[r]).filter(Boolean);
+  const filled = ids.length;
+  if (filled === 0) return 18;
+
+  const avg = (k) => avgSkill(ids, k, state);
+  let base = 50;
+  if (stage === "S1") base = (avg("product") * 0.35 + avg("design") * 0.25 + avg("protocol") * 0.25 + avg("compliance") * 0.15);
+  else if (stage === "S2") base = (avg("contract") * 0.40 + avg("infra") * 0.20 + avg("security") * 0.20 + avg("protocol") * 0.20);
+  else base = (avg("security") * 0.35 + avg("infra") * 0.25 + avg("compliance") * 0.20 + avg("growth") * 0.20);
+
+  const fillPenalty = filled >= roles.length ? 1 : filled >= 2 ? 0.82 : 0.65;
+  return clamp(base * fillPenalty, 10, 95);
+}
+
+function matchScore(project) {
+  const pref = project.prefs || RECIPE.dex;
+  const cur = project.stagePrefs || defaultStagePrefs();
+  const dist = (a, b) => Math.abs(clampPct(a) - clampPct(b));
+  const stageMatch = (stageKey) => {
+    const dims = Object.keys(pref[stageKey] || {});
+    if (dims.length === 0) return 50;
+    const avgDist = dims.reduce((acc, k) => acc + dist(cur[stageKey]?.[k] ?? 50, pref[stageKey]?.[k] ?? 50), 0) / dims.length;
+    return clamp(100 - avgDist, 0, 100);
+  };
+  const sliderPct = Math.round((stageMatch("S1") + stageMatch("S2") + stageMatch("S3")) / 3);
+  const combo = knownComboBreakdown(project.archetype, project.narrative, project.chain, project.audience);
+  // blend: slider is still the main driver, known combo adds "flavor" & known meta
+  return clamp(Math.round(sliderPct * 0.7 + combo.pct * 0.3), 0, 100);
+}
+
+function engineBonus(state) {
+  const e = state.engine || {};
+  const dev = clamp(Math.round(e.dev?.version ?? 1), 1, 9);
+  const sec = clamp(Math.round(e.sec?.version ?? 1), 1, 9);
+  const infra = clamp(Math.round(e.infra?.version ?? 1), 1, 9);
+  const eco = clamp(Math.round(e.eco?.version ?? 1), 1, 9);
+  return { dev, sec, infra, eco };
+}
+
+function computeLaunchScores(project, state) {
+  const power = effectiveTeamPower(project, state); // 10~95
+  const match = matchScore(project); // 0~100
+  const e = engineBonus(state);
+
+  const base = 35 + power * 0.35 + match * 0.35;
+  const productFit = clampPct(base + (e.eco - 1) * 2 + (project.stagePrefs?.S1?.uxVsMech ?? 50) * 0.05);
+  const techQuality = clampPct(base + (e.dev - 1) * 2 + (e.infra - 1) * 1.5);
+  const security = clampPct(base + (e.sec - 1) * 3 + (project.stagePrefs?.S3?.securityDepthVsSpeed ?? 50) * 0.08);
+  const growth = clampPct(base + (project.stagePrefs?.S3?.complianceVsMarketing ?? 50) * 0.10 + (project.stagePrefs?.S1?.complianceVsAggro ?? 50) * 0.05);
+  const compliance = clampPct(base + (project.stagePrefs?.S1?.complianceVsAggro ?? 50) * 0.08 + (project.stagePrefs?.S3?.complianceVsMarketing ?? 50) * -0.06);
+
+  return { productFit, techQuality, security, growth, compliance, match, teamPower: Math.round(power) };
+}
+
+function initialMetrics(project, scores, state) {
+  const rep = clampPct(state.resources?.reputation ?? 0);
+  const comm = clampPct(state.resources?.community ?? 0);
+  const fans = Math.max(0, Math.round(state.resources?.fans ?? 0));
+  const marketMul = 0.85 + rnd(0, 0.4); // bull/bear placeholder
+  // fans adds a small but real boost (intentionally not huge)
+  const fanBoost = clamp(fans * 0.18, 0, 45_000);
+  const baseUsers = (rep * 80 + comm * 60 + scores.growth * 90 + scores.productFit * 60) * marketMul + fanBoost;
+  const users = Math.round(clamp(baseUsers, 50, 220000));
+  const dau = Math.round(users * clamp(0.04 + scores.productFit / 300 + scores.growth / 380, 0.03, 0.22));
+  const retention = clampPct(25 + scores.productFit * 0.45 + scores.techQuality * 0.15 - (100 - scores.security) * 0.15);
+
+  let tvl = 0;
+  let volume = 0;
+  if (["dex", "lending", "perps", "bridge"].includes(project.archetype)) {
+    const trust = clamp(0.6 + scores.security / 180 + scores.compliance / 260, 0.3, 1.3);
+    tvl = Math.round(clamp(users * rnd(8, 28) * trust, 0, 3_000_000_000));
+    volume = Math.round(clamp(tvl * rnd(0.25, 1.2), 0, 6_000_000_000));
   }
 
-  if (actionKey === "submit") {
-    if (target.kind !== "platform") {
-      toast?.(t(state, "msg.submit.onlyPlatform"));
-      gainAP(state, cost);
-      return;
-    }
-    const drafts = target.submissions.filter((x) => x.status === "draft");
-    if (drafts.length === 0) {
-      toast?.(t(state, "msg.submit.noDraft"));
-      gainAP(state, cost);
-      return;
-    }
-    const submitCap = clamp(1 + Math.floor(st.writing / 40), 1, 3);
-    const n = Math.min(submitCap, drafts.length);
-    for (let i = 0; i < n; i++) drafts[i].status = "submitted";
-    adjustAfterAction(state, { mood: -1 });
-    log(state, t(state, "log.action.platform.submit", { n }));
+  return { users, dau, retention, tvl, volume };
+}
+
+function score10(x01) {
+  return clamp(Math.round(1 + clamp(x01, 0, 1) * 9), 1, 10);
+}
+
+export function projectProductScore10(project, state) {
+  const s = computeLaunchScores(project, state);
+  const v = clamp((s.productFit * 0.55 + s.growth * 0.30 + s.compliance * 0.15) / 100, 0, 1);
+  return score10(v);
+}
+
+export function projectTechScore10(project, state) {
+  const s = computeLaunchScores(project, state);
+  const v = clamp((s.techQuality * 0.55 + s.security * 0.35 + s.teamPower * 0.10) / 100, 0, 1);
+  return score10(v);
+}
+
+function makeLiveProduct(project, state) {
+  const scores = computeLaunchScores(project, state);
+  const m = initialMetrics(project, scores, state);
+  const initTokenPrice = clamp(0.35 + (scores.match / 100) * 1.8 + rnd(-0.08, 0.18), 0.08, 12);
+  const productScore10 = projectProductScore10(project, state);
+  const techScore10 = projectTechScore10(project, state);
+  return {
+    id: `PROD_${project.id}`,
+    kind: "product",
+    title: project.title,
+    archetype: project.archetype,
+    narrative: project.narrative,
+    chain: project.chain,
+    audience: project.audience,
+    platform: project.platform || "web",
+    launchedAt: { ...state.now },
+    scores,
+    productScore10,
+    techScore10,
+    features: [project.archetype],
+    kpi: {
+      users: m.users,
+      dau: m.dau,
+      retention: m.retention,
+      tvl: m.tvl,
+      volume: m.volume,
+      feeRateBps: clampPct(project.feeRateBps ?? 15),
+      protocolTakePct: clamp(project.takeRatePct ?? 0.35, 0.05, 0.9),
+      tokenPrice: initTokenPrice,
+      cumProfit: 0,
+      cumRevenue: 0,
+      fees: 0,
+      revenue: 0,
+      profit: 0,
+    },
+    ops: {
+      buybackPct: clamp(state.ops?.buybackPct ?? 0, 0, 0.5),
+      emissions: clamp(state.ops?.emissions ?? 0, 0, 1),
+      incentivesBudgetWeekly: clamp(Math.round(state.ops?.incentivesBudgetWeekly ?? 0), 0, 999999999),
+    },
+    risk: {
+      security: clampPct(10 + (100 - scores.security) * 0.6),
+      compliance: clampPct(10 + (100 - scores.compliance) * 0.5),
+    },
+  };
+}
+
+function ensureProductFields(prod) {
+  if (!prod || typeof prod !== "object") return;
+  if (!Array.isArray(prod.features)) prod.features = [];
+  if (!prod.kpi) prod.kpi = {};
+  if (!prod.risk) prod.risk = { security: 10, compliance: 10 };
+  if (!prod.scores) prod.scores = {};
+  if (typeof prod.kpi.tokenPrice !== "number") prod.kpi.tokenPrice = clamp(0.5 + rnd(-0.1, 0.2), 0.05, 8);
+  if (typeof prod.kpi.cumProfit !== "number") prod.kpi.cumProfit = 0;
+  if (typeof prod.kpi.cumRevenue !== "number") prod.kpi.cumRevenue = 0;
+  if (typeof prod.productScore10 !== "number") prod.productScore10 = clamp(Math.round(4 + rnd(-1, 2)), 1, 10);
+  if (typeof prod.techScore10 !== "number") prod.techScore10 = clamp(Math.round(4 + rnd(-1, 2)), 1, 10);
+  if (typeof prod.costSpent !== "number") prod.costSpent = 0;
+  if (typeof prod.scale !== "number") prod.scale = 1;
+  if (typeof prod.platform !== "string") prod.platform = "web";
+}
+
+function applyUpgradeToProduct(state, baseProdId, upgradeKey, projectLike) {
+  normalizeState(state);
+  const prod = (state.active?.products || []).find((x) => x.id === baseProdId);
+  if (!prod) return { ok: false, msg: "找不到要二次开发的产品。" };
+  ensureProductFields(prod);
+  const opts = upgradeOptionsForProduct(prod);
+  const up = opts.find((x) => x.key === upgradeKey);
+  if (!up) return { ok: false, msg: "该产品不支持这个二次开发方向。" };
+
+  // mark feature
+  const tag = up.targetArchetype || up.key;
+  if (!prod.features.includes(tag)) prod.features.push(tag);
+
+  // blend in scores using current project performance as a proxy
+  const s2 = projectLike ? computeLaunchScores(projectLike, state) : null;
+  const sd = up.scoreDelta || {};
+  const blend = (k, delta) => {
+    const cur = clampPct(prod.scores?.[k] ?? 50);
+    const fromProj = s2 ? clampPct(s2[k] ?? 50) : 50;
+    const next = clampPct(cur * 0.86 + fromProj * 0.14 + (delta || 0));
+    prod.scores[k] = next;
+  };
+  for (const k of ["productFit", "techQuality", "security", "growth", "compliance"]) blend(k, sd[k] || 0);
+
+  // if upgrade enables DeFi KPIs on a previously non-DeFi product
+  prod.kpi.users = Math.round(prod.kpi.users || 0);
+  prod.kpi.dau = Math.round(prod.kpi.dau || 0);
+  if (up.unlockKpi?.tvl && (prod.kpi.tvl == null || prod.kpi.volume == null)) {
+    const baseUsers = Math.max(200, Math.round(prod.kpi.users || 2000));
+    const trust = clamp(0.55 + (prod.scores.security || 50) / 200, 0.25, 1.2);
+    prod.kpi.tvl = Math.round(clamp(baseUsers * rnd(6, 18) * trust, 0, 3_000_000_000));
+    prod.kpi.volume = Math.round(clamp(prod.kpi.tvl * rnd(0.18, 0.85), 0, 6_000_000_000));
+    prod.kpi.feeRateBps = clampPct(prod.kpi.feeRateBps ?? 15);
+    prod.kpi.protocolTakePct = clamp(prod.kpi.protocolTakePct ?? 0.35, 0.05, 0.9);
   }
 
-  if (actionKey === "comms") {
-    if (target.kind === "direct") {
-      // 更快：沟通推进更明显（配合度/修复率更容易拉起来）
-      const up = Math.round(10 + st.comms / 8);
-      target.cooperation = clamp(target.cooperation + up, 0, 100);
-      target.fixRate = clamp((target.fixRate ?? 50) + Math.round(up * 0.6), 0, 100);
-      adjustAfterAction(state, { mood: -1, stamina: -1 });
-      log(state, t(state, "log.action.comms.direct", { title: target.title, up }));
-    } else {
-      adjustAfterAction(state, { mood: -1 });
-      log(state, t(state, "log.action.comms.platform", { title: target.title }));
-    }
-  }
+  // immediate growth bump (feel-good)
+  const bump = clamp(0.02 + (prod.scores.growth || 50) / 800, 0.01, 0.08);
+  prod.kpi.users = Math.round(clamp((prod.kpi.users || 0) * (1 + bump), 0, 9_999_999));
+  prod.kpi.dau = Math.round(clamp((prod.kpi.dau || 0) * (1 + bump), 0, prod.kpi.users));
 
-  if (actionKey === "blog") {
-    // 吹逼 / 发输出：有收益也有翻车风险；会影响 X 舆情热度（后续事件触发）
-    if (!state.world) state.world = { majorIncidentCooldown: 0, eventPityWeeks: 0, xHeat: 0, xLastOutcome: null, xLastPostTotalWeek: null };
-    const heat = clamp(Math.round(state.world.xHeat ?? 0), 0, 100);
-    const skill = (st.writing + st.comms) / 200; // 0~1
-    const brand = (st.brand ?? 0) / 120;
-    const repS = (st.reputation ?? 0) / 120;
-    const scrutiny = heat / 220; // 热度越高越容易被盯
-    const okP = clamp(0.45 + skill * 0.55 + brand * 0.35 + repS * 0.25 - scrutiny, 0.12, 0.92);
-    const ok = Math.random() < okP;
-    const viralP = clamp(0.06 + (st.brand ?? 0) / 260 + (st.reputation ?? 0) / 320 - heat / 600, 0.03, 0.22);
-    const viral = ok && Math.random() < viralP;
+  // risk adjusts slightly with added complexity
+  prod.risk.security = clampPct((prod.risk.security || 10) + 2 + Math.max(0, (50 - (prod.scores.security || 50)) / 25));
+  prod.risk.compliance = clampPct((prod.risk.compliance || 10) + 1 + Math.max(0, (50 - (prod.scores.compliance || 50)) / 30));
 
-    state.world.xLastPostTotalWeek = clamp(Math.round(state.progress?.totalWeeks ?? 0), 0, 999999);
+  return { ok: true, upgrade: up };
+}
 
-    if (viral) {
-      const repGain = ri(3, 6);
-      const brandGain = ri(3, 6);
-      const netGain = ri(1, 4);
-      const tip = ri(800, 12000);
-      adjustAfterAction(state, { reputation: repGain, brand: brandGain, network: netGain, cash: tip, mood: +2, stamina: -1 });
-      if (!state.progress) state.progress = { noOrderWeeks: 0, totalWeeks: 0, earnedTotal: 0, findingsTotal: 0 };
-      state.progress.earnedTotal = (state.progress.earnedTotal || 0) + Math.max(0, tip);
-      state.world.xHeat = clamp(heat + ri(30, 55), 0, 100);
-      state.world.xLastOutcome = "viral";
+export function tickProjects(state, deltaHours) {
+  normalizeState(state);
+  const hours = Math.max(0, deltaHours || 0);
+  if (!hours) return;
 
-      const tpl = t(state, "x.brag.viral.templates");
-      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
-      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(2600, 28000), rts: ri(600, 8200) });
-      log(state, t(state, "log.action.blog.viral", { rep: repGain, brand: brandGain, net: netGain, tip }), "good");
-    } else if (ok) {
-      const repGain = ri(1, 3) + (st.writing > 55 ? 1 : 0);
-      const netGain = ri(0, 2) + (st.comms > 55 ? 1 : 0);
-      const brandGain = ri(0, 2) + (st.brand > 40 ? 1 : 0);
-      // 小概率“打赏/咨询邀约”
-      const tip = Math.random() < 0.22 ? ri(200, 3500) : 0;
-      adjustAfterAction(state, { reputation: repGain, brand: brandGain, network: netGain, cash: tip, mood: +1, stamina: -1 });
-      if (tip > 0) {
-        if (!state.progress) state.progress = { noOrderWeeks: 0, totalWeeks: 0, earnedTotal: 0, findingsTotal: 0 };
-        state.progress.earnedTotal = (state.progress.earnedTotal || 0) + Math.max(0, tip);
-      }
-      state.world.xHeat = clamp(heat + ri(8, 18), 0, 100);
-      state.world.xLastOutcome = "ok";
-
-      const tpl = t(state, "x.brag.ok.templates");
-      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
-      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(180, 6800), rts: ri(40, 1600) });
-      const tipNote = tip > 0 ? t(state, "log.action.blog.tipNote", { tip }) : "";
-      log(state, t(state, "log.action.blog.ok", { rep: repGain, brand: brandGain, net: netGain, tipNote }), "info");
-    } else {
-      const repDown = ri(1, 4);
-      const brandDown = ri(1, 3);
-      const moodDown = ri(2, 5);
-      const complianceUp = Math.random() < 0.35 ? ri(1, 4) : 0; // 夸大承诺/误导
-      adjustAfterAction(state, { reputation: -repDown, brand: -brandDown, mood: -moodDown, stamina: -1, compliance: complianceUp });
-      state.world.xHeat = clamp(heat + ri(25, 45), 0, 100);
-      state.world.xLastOutcome = "fail";
-
-      const tpl = t(state, "x.brag.fail.templates");
-      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
-      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(80, 2400), rts: ri(30, 1400) });
-      const compNote = complianceUp > 0 ? t(state, "log.action.blog.compNote", { compliance: complianceUp }) : "";
-      log(state, t(state, "log.action.blog.fail", { rep: repDown, brand: brandDown, mood: moodDown, compNote }), "warn");
-    }
-  }
-
-  if (actionKey === "tweet") {
-    // 水推特：更低门槛、更随机、更“娱乐”；但“私货”必须靠声望+人脉解锁；翻车要进剧情链
-    if (!state.world) state.world = { majorIncidentCooldown: 0, eventPityWeeks: 0, xHeat: 0, xLastOutcome: null, xLastPostTotalWeek: null, xDrama: { stage: null, intensity: 0, topic: "", weeksLeft: 0 } };
-    if (!state.world.xDrama) state.world.xDrama = { stage: null, intensity: 0, topic: "", variant: "quote", weeksLeft: 0 };
-    const heat = clamp(Math.round(state.world.xHeat ?? 0), 0, 100);
-
-    const writing = clamp(st.writing ?? 0, 0, 100);
-    const comms = clamp(st.comms ?? 0, 0, 100);
-    const rep = clamp(st.reputation ?? 0, 0, 100);
-    const brand = clamp(st.brand ?? 0, 0, 100);
-    const net = clamp(st.network ?? 0, 0, 100);
-    const mood = clamp(st.mood ?? 0, 0, 9999);
-    const compliance = clamp(st.compliance ?? 0, 0, 100);
-
-    // 选一个“水法”：梗/热评/强行抛观点/吹牛逼（越“热评/吹牛逼”越容易翻车）
-    const modes = [
-      { k: "meme", w: 34 },
-      { k: "reply", w: 24 },
-      { k: "hot", w: 22 },
-      { k: "brag", w: 20 },
+  const makeRatingEntry = (title, match, kind = "launch", projectLike = null) => {
+    const m = clamp(Math.round(match || 0), 0, 100);
+    const base = 1 + (m / 100) * 9; // 1~10
+    // 3 realistic institutions (different "taste" but still mainly driven by match)
+    const insts = [
+      { name: "a16z Crypto", bias: +0.2 },
+      { name: "Paradigm", bias: +0.0 },
+      { name: "慢雾科技（SlowMist）", bias: -0.2 },
     ];
-    const totalW = modes.reduce((a, b) => a + b.w, 0);
-    let r1 = Math.random() * totalW;
-    let mode = "meme";
-    for (const m of modes) {
-      r1 -= m.w;
-      if (r1 <= 0) {
-        mode = m.k;
-        break;
-      }
-    }
-
-    const scrutiny = heat / 100; // 越热越容易被盯
-    const quality = (writing * 0.40 + comms * 0.35 + rep * 0.15 + brand * 0.10) / 100;
-    const edgy = mode === "hot" || mode === "brag";
-    const moodMul = clamp(0.86 + mood / 700, 0.86, 1.12);
-
-    // 五档结果：flop / ok / pop / viral / meltdown
-    let wMeltdown = clamp(0.10 + scrutiny * 0.22 + (edgy ? 0.10 : 0) + (compliance >= 60 ? 0.06 : 0) - (writing + comms) / 820, 0.05, 0.42);
-    let wViral = clamp(0.05 + brand / 220 + rep / 460 + (mode === "meme" ? 0.03 : 0) - heat / 850, 0.02, 0.24);
-    let wPop = clamp(0.10 + quality * 0.12 + brand / 420 - heat / 900, 0.06, 0.30);
-    let wOk = clamp(0.42 + quality * 0.18 + (mode === "reply" ? 0.03 : 0) - scrutiny * 0.10, 0.18, 0.70) * moodMul;
-    let wFlop = 1 - (wMeltdown + wViral + wPop + wOk);
-    wFlop = clamp(wFlop, 0.06, 0.55);
-    // 归一化一下，避免和为 >1
-    const sum = wMeltdown + wViral + wPop + wOk + wFlop;
-    wMeltdown /= sum;
-    wViral /= sum;
-    wPop /= sum;
-    wOk /= sum;
-    wFlop /= sum;
-
-    const roll = Math.random();
-    let outcome = "ok";
-    if (roll < wMeltdown) outcome = "meltdown";
-    else if (roll < wMeltdown + wViral) outcome = "viral";
-    else if (roll < wMeltdown + wViral + wPop) outcome = "pop";
-    else if (roll < wMeltdown + wViral + wPop + wOk) outcome = "ok";
-    else outcome = "flop";
-
-    state.world.xLastPostTotalWeek = clamp(Math.round(state.progress?.totalWeeks ?? 0), 0, 999999);
-    state.world.xLastOutcome = outcome;
-
-    // “私货”门槛：声望/关系网不足接不到（别做梦）
-    const dmGate = (rep >= 30 && net >= 20) || (brand >= 35 && rep >= 25);
-    const dmBigGate = rep >= 60 && net >= 45 && brand >= 40;
-
-    let repDelta = 0;
-    let brandDelta = 0;
-    let netDelta = 0;
-    let cashDelta = 0;
-    let moodDelta = 0;
-    let compDelta = 0;
-    let heatDelta = 0;
-    let extra = "";
-
-    const dmBase = 0.02 + brand / 520 + rep / 720 + (outcome === "viral" ? 0.14 : outcome === "pop" ? 0.08 : 0);
-    const leadBase = 0.04 + rep / 620 + (outcome === "viral" ? 0.08 : outcome === "pop" ? 0.05 : 0);
-    const dmP = dmGate ? clamp(dmBase * (dmBigGate ? 1.25 : 1), 0.0, 0.28) : 0;
-    const leadP = clamp(leadBase, 0.02, 0.26);
-
-    // 在职 + 私货：COI 风险（别装死）
-    const employed = Boolean(state.employment?.employed);
-
-    const maybeDM = (stt) => {
-      if (!dmGate) return false;
-      if (Math.random() >= dmP) return false;
-      const fee = dmBigGate ? ri(8000, 45000) : ri(900, 14000);
-      cashDelta += fee;
-      // 钱越快，越容易踩线
-      const compBump = employed ? ri(1, 3) : 0;
-      const compDirty = compliance >= 60 ? ri(1, 4) : 0;
-      compDelta += compBump + compDirty + (Math.random() < 0.22 ? ri(0, 2) : 0);
-      if (employed) stt.conflict.risk = clamp((stt.conflict?.risk ?? 0) + ri(6, 14), 0, 100);
-      extra = t(state, "log.action.tweet.dm", { fee });
-      return true;
-    };
-
-    const maybeLead = () => {
-      if (Math.random() >= leadP) return false;
-      state.market.direct = state.market.direct || [];
-      const order = makeDirectOrder(state);
-      state.market.direct.unshift(order);
-      extra = t(state, "log.action.tweet.lead");
-      return true;
-    };
-
-    if (outcome === "viral") {
-      repDelta = ri(2, 5);
-      brandDelta = ri(5, 9);
-      netDelta = ri(1, 3);
-      cashDelta = ri(300, 9000);
-      moodDelta = ri(1, 3);
-      heatDelta = ri(28, 48);
-      if (!maybeDM(state)) maybeLead();
-      const tpl = t(state, "x.tweet.viral.templates");
-      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
-      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(2600, 38000), rts: ri(600, 9800) });
-      const tipNote = cashDelta > 0 ? t(state, "log.action.tweet.tipNote", { tip: cashDelta }) : "";
-      log(state, t(state, "log.action.tweet.viral", { rep: repDelta, brand: brandDelta, net: netDelta, tipNote, extra }), "good");
-    } else if (outcome === "pop") {
-      repDelta = ri(1, 3);
-      brandDelta = ri(2, 5);
-      netDelta = ri(1, 2);
-      cashDelta = Math.random() < 0.22 ? ri(200, 4500) : 0;
-      moodDelta = ri(0, 2);
-      heatDelta = ri(16, 28);
-      if (!maybeDM(state) && Math.random() < 0.75) maybeLead();
-      const tpl = t(state, "x.tweet.pop.templates");
-      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
-      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(420, 12000), rts: ri(90, 2600) });
-      const tipNote = cashDelta > 0 ? t(state, "log.action.tweet.tipNote", { tip: cashDelta }) : "";
-      log(state, t(state, "log.action.tweet.pop", { rep: repDelta, brand: brandDelta, net: netDelta, tipNote, extra }), "info");
-    } else if (outcome === "ok") {
-      repDelta = ri(0, 2);
-      brandDelta = ri(0, 2);
-      netDelta = ri(0, 1);
-      cashDelta = dmGate && Math.random() < 0.10 ? ri(100, 1800) : 0;
-      moodDelta = ri(0, 1);
-      heatDelta = ri(8, 16);
-      if (cashDelta > 0) extra = t(state, "log.action.tweet.tipNote", { tip: cashDelta });
-      const tpl = t(state, "x.tweet.ok.templates");
-      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
-      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(60, 5200), rts: ri(10, 900) });
-      const tipNote = cashDelta > 0 ? t(state, "log.action.tweet.tipNote", { tip: cashDelta }) : "";
-      log(state, t(state, "log.action.tweet.ok", { rep: repDelta, brand: brandDelta, net: netDelta, tipNote, extra: "" }), "info");
-    } else if (outcome === "flop") {
-      repDelta = 0;
-      brandDelta = Math.random() < 0.25 ? 1 : 0;
-      netDelta = 0;
-      cashDelta = 0;
-      moodDelta = Math.random() < 0.55 ? -1 : 0;
-      heatDelta = ri(4, 10);
-      const tpl = t(state, "x.tweet.flop.templates");
-      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
-      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(0, 120), rts: ri(0, 30) });
-      log(state, t(state, "log.action.tweet.flop"), "info");
-    } else {
-      // meltdown
-      repDelta = -ri(1, 3);
-      brandDelta = -ri(2, 6);
-      netDelta = 0;
-      moodDelta = -ri(3, 7);
-      compDelta = Math.random() < 0.35 ? ri(1, 5) : 0;
-      heatDelta = ri(28, 52);
-      const tpl = t(state, "x.tweet.meltdown.templates");
-      const text = Array.isArray(tpl) ? pick(tpl) : String(tpl);
-      addCustomXPost(state, { author: `${state.player.name} @you`, text, likes: ri(20, 2600), rts: ri(10, 1600) });
-      const compNote = compDelta > 0 ? t(state, "log.action.tweet.compNote", { compliance: compDelta }) : "";
-      log(state, t(state, "log.action.tweet.meltdown", { rep: Math.abs(repDelta), brand: Math.abs(brandDelta), mood: Math.abs(moodDelta), compNote }), "warn");
-
-      // 进入打脸剧情链：spark -> callout -> aftermath（主要塞 inbox）
-      if (state.world?.xDrama && !state.world.xDrama.stage) {
-        const topics = t(state, "xdrama.topics");
-        const topic = Array.isArray(topics) ? pick(topics) : String(topics || "");
-        // 两条更毒的分支：商单/收钱质疑、旧帖考古
-        const employed = Boolean(state.employment?.employed);
-        const complianceNow = clamp(st.compliance ?? 0, 0, 100);
-        const heatBias = clamp(heat / 100, 0, 1);
-        const shillBias = employed || complianceNow >= 55 ? 0.22 : 0.10;
-        const oldBias = 0.16 + heatBias * 0.10;
-        const r2 = Math.random();
-        let variant = "quote";
-        if (r2 < shillBias) variant = "shill";
-        else if (r2 < shillBias + oldBias) variant = "old";
-        state.world.xDrama.stage = "spark";
-        state.world.xDrama.weeksLeft = ri(1, 2);
-        state.world.xDrama.intensity = clamp(ri(45, 78) + Math.round(heat / 3), 0, 100);
-        state.world.xDrama.topic = topic || "";
-        state.world.xDrama.variant = variant;
-      }
-    }
-
-    adjustAfterAction(state, {
-      reputation: repDelta,
-      brand: brandDelta,
-      network: netDelta,
-      cash: cashDelta,
-      mood: moodDelta,
-      stamina: -1,
-      compliance: compDelta,
+    const ratings = insts.map((it) => {
+      const jitter = rnd(-0.6, 0.6);
+      const s = clamp(Math.round(base + it.bias + jitter), 1, 10);
+      return { name: it.name, score: s };
     });
+    const a = projectLike?.archetype;
+    const n = projectLike?.narrative;
+    const c = projectLike?.chain;
+    const u = projectLike?.audience;
+    const combo = projectLike ? knownComboBreakdown(a, n, c, u) : null;
+    return {
+      id: `rate_${Date.now()}_${ri(100, 999)}`,
+      kind,
+      title: String(title || ""),
+      match: m,
+      archetype: a ? String(a) : "",
+      combo,
+      ratings,
+    };
+  };
 
-    if (cashDelta > 0) {
-      ensureProgress(state);
-      state.progress.earnedTotal = (state.progress.earnedTotal || 0) + Math.max(0, Math.round(cashDelta));
-    }
-    state.world.xHeat = clamp(heat + heatDelta, 0, 100);
-  }
+  const advanceOne = (p) => {
+    if (!p) return;
+    if (p.stagePaused) return;
+    const power = effectiveTeamPower(p, state); // 10~95
+    const scaleMul = p.scale === 3 ? 0.75 : p.scale === 2 ? 0.9 : 1.05;
+    const engineMul = 1 + (engineBonus(state).dev - 1) * 0.03;
+    const rate = (0.9 + power / 130) * scaleMul * engineMul; // % per hour baseline-ish
+    const inc = rate * hours;
+    p.stageProgress = clamp((p.stageProgress || 0) + inc, 0, 100);
 
-  if (actionKey === "learn") {
-    // 学习不一定能提升：有时候你就是在“假装学习”
-    const r = Math.random();
-    if (r < 0.40) {
-      const k = pick(["skill", "tooling", "writing", "comms"]);
-      const inc = ri(1, 2);
-      adjustAfterAction(state, { [k]: inc, stamina: -1, mood: -1 });
-      log(state, t(state, "log.action.learn.gain", { stat: t(state, `stat.${k}`), inc }), "good");
-    } else if (r < 0.85) {
-      adjustAfterAction(state, { mood: +1, stamina: +1 });
-      log(state, t(state, "log.action.learn.nogain"), "info");
-    } else {
-      adjustAfterAction(state, { mood: -1, stamina: -1 });
-      log(state, t(state, "log.action.learn.doomscroll"), "warn");
-    }
-  }
+    // burn budget while building
+    const burn = Math.round((p.budget / (p.estWeeks * 40)) * hours * rnd(0.85, 1.15));
+    const cash = state.resources?.cash ?? 0;
+    const spent = clamp(burn, 0, Math.max(0, cash));
+    if (state.resources) state.resources.cash -= spent;
+    p.investedBudget = Math.round((p.investedBudget || 0) + spent);
 
-  if (actionKey === "rest") {
-    // 休息更有效：让“本周大量休息/躺平还能苟住”
-    const cap = healthCap(state);
-    let sta = ri(Math.round(cap * 0.12), Math.round(cap * 0.20)); // 150 cap: 18~30
-    let md = ri(Math.round(cap * 0.10), Math.round(cap * 0.16)); // 150 cap: 15~24
-    if (hasItem(state, "gym_membership")) {
-      sta = Math.round(sta * 1.15);
-      md = Math.round(md * 1.15);
+    if (p.stageProgress >= 100) {
+      p.stageIndex = clamp(Math.round((p.stageIndex ?? 0) + 1), 0, 3);
+      p.stageProgress = 0;
+      if (p.stageIndex >= 3) return { done: true };
+      p.stagePaused = true;
+      state.stageQueue = state.stageQueue || [];
+      state.stageQueue.push({ kind: "project", id: p.id });
+      return { done: false, stageChanged: true };
     }
-    adjustAfterAction(state, { stamina: sta, mood: md });
-    log(state, t(state, "log.action.rest", { sta, md }), "good");
-  }
+    return { done: false };
+  };
 
-  if (actionKey === "compliance") {
-    const down = ri(3, 7);
-    adjustAfterAction(state, { compliance: -down, mood: -1 });
-    log(state, t(state, "log.action.compliance", { down }));
-  }
+  for (const p of [...state.active.projects]) {
+    const r = advanceOne(p);
+    if (r?.done) {
+      if (p.upgradeOf && p.upgradeKey) {
+        const spentCost = Math.round(Number(p.investedBudget) || 0);
+        const productScore10 = projectProductScore10(p, state);
+        const techScore10 = projectTechScore10(p, state);
+        const rr = applyUpgradeToProduct(state, p.upgradeOf, p.upgradeKey, p);
+        state.active.projects = state.active.projects.filter((x) => x.id !== p.id);
+        if (rr.ok) {
+          const techGain = Math.round(2 + (matchScore(p) || 50) / 40);
+          state.resources.techPoints = clamp((state.resources.techPoints || 0) + techGain, 0, 999999);
+          log(state, `二次开发完成：${rr.upgrade.title}（技术点 +${techGain}）`, "good");
+          state.ui = state.ui || { ratingQueue: [] };
+          state.ui.ratingQueue = state.ui.ratingQueue || [];
+          const mp = matchScore(p) || 50;
+          const entry = makeRatingEntry(`二次开发交付：${rr.upgrade.title}`, mp, "upgrade", p);
+          state.ui.ratingQueue.push(entry);
 
-  // 公司任务推进（需要选中 company ticket）
-  if (actionKey === "companyWork") {
-    if (!target || target.kind !== "company") {
-      toast?.(t(state, "msg.company.needTarget"));
-      gainAP(state, cost);
-      return;
-    }
-    if (!state.employment?.employed) {
-      toast?.(t(state, "msg.company.needEmployment"));
-      gainAP(state, cost);
-      return;
-    }
-    const inc = clamp(Math.round(12 + st.comms / 15 + st.writing / 18), 8, 22);
-    target.progress = clamp((target.progress || 0) + inc, 0, 100);
+          // fans gain (small impact overall)
+          const avg10 = entry?.ratings?.length ? entry.ratings.reduce((a, x) => a + (Number(x.score) || 0), 0) / entry.ratings.length : 6;
+          const fansGain = clamp(Math.round(20 + avg10 * 16 + productScore10 * 8 + (p.scale || 1) * 35 + rnd(-30, 30)), 0, 5000);
+          state.resources.fans = Math.round((state.resources.fans || 0) + fansGain);
 
-    const mode = state.employment.vanityKpi?.mode || "none";
-    let perf = 1;
-    let trust = 0;
-    let postureGain = 0;
-    if (mode === "loc") {
-      perf = 2;
-    } else if (mode === "refactor") {
-      perf = 2;
-      trust = 1;
-    } else {
-      perf = 1;
-      postureGain = 1;
-    }
-    state.employment.performance = clamp((state.employment.performance || 50) + perf, 0, 100);
-    state.employment.trust = clamp((state.employment.trust || 50) + trust, 0, 100);
-    if (postureGain) state.posture.tests = clamp((state.posture.tests || 10) + postureGain, 0, 100);
-    adjustAfterAction(state, { stamina: -2, mood: -1 });
-    log(state, t(state, "log.action.company.progress", { title: target.title, inc }), "info");
-    if (target.progress >= 100) {
-      log(state, t(state, "log.action.company.done", { title: target.title, perf }), "good");
-      state.active.company = (state.active.company || []).filter((x) => x.id !== target.id);
-      state.employment.politics = clamp((state.employment.politics || 20) - 2, 0, 100);
-    }
-  }
-
-  if (actionKey === "meeting") {
-    if (!state.employment?.employed) {
-      toast?.(t(state, "msg.meeting.needEmployment"));
-      gainAP(state, cost);
-      return;
-    }
-    state.employment.trust = clamp((state.employment.trust || 50) + 1, 0, 100);
-    state.employment.performance = clamp((state.employment.performance || 50) + 1, 0, 100);
-    state.posture.runbooks = clamp((state.posture.runbooks || 10) + 1, 0, 100);
-    adjustAfterAction(state, { mood: -1, stamina: -1 });
-    log(state, t(state, "log.action.meeting"), "info");
-  }
-
-  if (actionKey === "aiResearch") {
-    const inc = clamp(Math.round(12 + st.writing / 12), 8, 20);
-    state.research.progress.aiAudit = clamp((state.research.progress.aiAudit || 0) + inc, 0, 100);
-    state.stats.brand = clamp((state.stats.brand || 0) + 2, 0, 100);
-    adjustAfterAction(state, { stamina: -1, mood: -1 });
-
-    if (state.employment?.employed && state.employment.companyType === "exchange") {
-      state.employment.performance = clamp((state.employment.performance || 50) - 1, 0, 100);
-      state.employment.politics = clamp((state.employment.politics || 20) + 2, 0, 100);
-      log(state, t(state, "log.action.aiResearch.warn", { inc }), "warn");
-    } else {
-      log(state, t(state, "log.action.aiResearch.good", { inc }), "good");
-    }
-
-    if (state.research.progress.aiAudit >= 80 && (state.research.published.aiAudit || 0) < 1) {
-      state.research.published.aiAudit = (state.research.published.aiAudit || 0) + 1;
-      addCustomXPost(state, {
-        author: `${state.player.name} @you`,
-        text: t(state, "xpost.aiResearch.publish"),
-      });
-      state.stats.reputation = clamp((state.stats.reputation || 0) + 2, 0, 100);
-      log(state, t(state, "log.aiResearch.publish"), "good");
-    }
-  }
-
-  if (actionKey === "productizeAI") {
-    const inc = clamp(Math.round(10 + st.tooling / 10), 8, 18);
-    state.research.internalAdoption.aiAudit = clamp((state.research.internalAdoption.aiAudit || 0) + inc, 0, 100);
-    state.posture.monitoring = clamp((state.posture.monitoring || 10) + 1, 0, 100);
-    if (state.employment?.employed) {
-      state.employment.performance = clamp((state.employment.performance || 50) + 2, 0, 100);
-      state.employment.trust = clamp((state.employment.trust || 50) + 1, 0, 100);
-    }
-    adjustAfterAction(state, { stamina: -2, mood: -1 });
-    log(state, t(state, "log.aiResearch.productized", { inc }), "good");
-  }
-
-  if (actionKey === "incidentAnalysis" || actionKey === "fundTrace" || actionKey === "writeBrief" || actionKey === "postX") {
-    const mi = state.majorIncident;
-    if (!mi || !mi.active) {
-      toast?.(t(state, "msg.major.none"));
-      gainAP(state, cost);
-      return;
-    }
-    const p = mi.progress || (mi.progress = { analysis: 0, tracing: 0, writeup: 0, xThread: 0 });
-    if (actionKey === "incidentAnalysis") {
-      p.analysis = clamp(p.analysis + ri(18, 30), 0, 100);
-      adjustAfterAction(state, { stamina: -1, mood: -1 });
-      log(state, t(state, "log.major.action.analysis", { pct: p.analysis }), "info");
-    }
-    if (actionKey === "fundTrace") {
-      p.tracing = clamp(p.tracing + ri(15, 28), 0, 100);
-      adjustAfterAction(state, { stamina: -1, mood: -1 });
-      log(state, t(state, "log.major.action.tracing", { pct: p.tracing }), "info");
-    }
-    if (actionKey === "writeBrief") {
-      p.writeup = clamp(p.writeup + ri(16, 30) + Math.round(st.writing / 25), 0, 100);
-      adjustAfterAction(state, { stamina: -1, mood: -1 });
-      log(state, t(state, "log.major.action.writeup", { pct: p.writeup }), "info");
-    }
-    if (actionKey === "postX") {
-      const quality = p.analysis + p.writeup + Math.round(p.tracing / 2);
-      const early = quality < 120;
-      if (early) {
-        state.stats.reputation = clamp(state.stats.reputation - 2, 0, 100);
-        state.stats.brand = clamp(state.stats.brand - 1, 0, 100);
-        if (state.employment?.employed) {
-          state.employment.trust = clamp((state.employment.trust || 50) - 3, 0, 100);
-          state.employment.performance = clamp((state.employment.performance || 50) - 2, 0, 100);
+          state.history = state.history || { projectsDone: [] };
+          state.history.projectsDone = Array.isArray(state.history.projectsDone) ? state.history.projectsDone : [];
+          state.history.projectsDone.unshift({
+            id: `DONE_${p.id}`,
+            kind: "upgrade",
+            title: rr.upgrade.title,
+            baseProductId: p.upgradeOf,
+            archetype: p.archetype,
+            narrative: p.narrative,
+            chain: p.chain,
+            audience: p.audience,
+            platform: p.platform || "web",
+            scale: p.scale || 1,
+            productScore10,
+            techScore10,
+            avgRating10: Math.round(avg10 * 10) / 10,
+            matchPct: mp,
+            fansGained: fansGain,
+            costSpent: spentCost,
+            stagePrefs: JSON.parse(JSON.stringify(p.stagePrefs || {})),
+            stageTeam: JSON.parse(JSON.stringify(p.stageTeam || {})),
+            finishedAt: { ...(state.now || {}) },
+          });
+        } else {
+          log(state, `二次开发完成但应用失败：${rr.msg}`, "warn");
         }
-        addCustomXPost(state, { author: `${state.player.name} @you`, text: t(state, "xpost.major.early", { title: mi.title }) });
-        log(state, t(state, "log.major.postX.early"), "bad");
-        // 一旦发出就算“结算”：避免刷帖反复薅/反复扣
-        state.majorIncident = null;
-        state.world.majorIncidentCooldown = ri(6, 14);
       } else {
-        const offset = 2 - mi.weeksLeft; // 越早越小
-        const repGain = offset <= 0 ? ri(3, 6) : ri(1, 4);
-        const brandGain = offset <= 0 ? ri(3, 6) : ri(1, 4);
-        state.stats.reputation = clamp(state.stats.reputation + repGain, 0, 100);
-        state.stats.brand = clamp(state.stats.brand + brandGain, 0, 100);
-        if (state.employment?.employed) {
-          state.employment.performance = clamp((state.employment.performance || 50) + ri(1, 3), 0, 100);
-          state.employment.trust = clamp((state.employment.trust || 50) + ri(0, 2), 0, 100);
-        }
-        addCustomXPost(state, { author: `${state.player.name} @you`, text: t(state, "xpost.major.good", { title: mi.title, weeks: mi.weeksLeft }) });
-        log(state, t(state, "log.major.postX.good", { repGain, brandGain }), "good");
-        state.majorIncident = null;
-        state.world.majorIncidentCooldown = ri(8, 18);
+        const spentCost = Math.round(Number(p.investedBudget) || 0);
+        const prod = makeLiveProduct(p, state);
+        prod.costSpent = spentCost;
+        prod.scale = p.scale || 1;
+        state.active.products.push(prod);
+        state.active.projects = state.active.projects.filter((x) => x.id !== p.id);
+        state.selectedTarget = { kind: "product", id: prod.id };
+
+        // rewards: tech points + reputation bump for good match/security
+        const techGain = Math.round(3 + prod.scores.match / 30 + prod.scores.techQuality / 45);
+        state.resources.techPoints = clamp((state.resources.techPoints || 0) + techGain, 0, 999999);
+        const repGain = Math.round((prod.scores.productFit + prod.scores.security + prod.scores.growth) / 120 - 1);
+        state.resources.reputation = clamp(state.resources.reputation + repGain, 0, 100);
+        log(state, `上线：${prod.title}（匹配度 ${prod.scores.match}，技术点 +${techGain}，声誉 ${repGain >= 0 ? "+" : ""}${repGain}）`, "good");
+
+        state.ui = state.ui || { ratingQueue: [] };
+        state.ui.ratingQueue = state.ui.ratingQueue || [];
+        const mp = prod.scores.match || 50;
+        const entry = makeRatingEntry(`开发完成：${prod.title}`, mp, "launch", p);
+        state.ui.ratingQueue.push(entry);
+
+        const avg10 = entry?.ratings?.length ? entry.ratings.reduce((a, x) => a + (Number(x.score) || 0), 0) / entry.ratings.length : 6;
+        const fansGain = clamp(Math.round(30 + avg10 * 18 + (prod.productScore10 || 6) * 10 + (p.scale || 1) * 60 + rnd(-50, 60)), 0, 12000);
+        state.resources.fans = Math.round((state.resources.fans || 0) + fansGain);
+
+        state.history = state.history || { projectsDone: [] };
+        state.history.projectsDone = Array.isArray(state.history.projectsDone) ? state.history.projectsDone : [];
+        state.history.projectsDone.unshift({
+          id: `DONE_${p.id}`,
+          kind: "launch",
+          title: prod.title,
+          productId: prod.id,
+          archetype: prod.archetype,
+          narrative: prod.narrative,
+          chain: prod.chain,
+          audience: prod.audience,
+          platform: prod.platform || "web",
+          scale: p.scale || 1,
+          productScore10: prod.productScore10,
+          techScore10: prod.techScore10,
+          avgRating10: Math.round(avg10 * 10) / 10,
+          matchPct: mp,
+          fansGained: fansGain,
+          costSpent: spentCost,
+          stagePrefs: JSON.parse(JSON.stringify(p.stagePrefs || {})),
+          stageTeam: JSON.parse(JSON.stringify(p.stageTeam || {})),
+          finishedAt: { ...(state.now || {}) },
+        });
       }
-      p.xThread = 100;
     }
   }
-
-  // 工时锁定：由 UI 根据 ap.now<ap.max 判定（避免状态不同步）
-  refreshAP(state);
 }
 
-export function deliverDirect(state, p) {
-  const st = state.stats;
-  const reportScore = clamp(p.report?.draft ?? 0, 0, 100);
-  const foundPts = (p.found || []).reduce((a, x) => a + (x.points || 0), 0);
-  const coverage = clamp(p.coverage ?? 0, 0, 100);
-
-  const fixRate = clamp(p.fixRate ?? 50, 0, 100);
-  const shipUrgency = clamp(p.shipUrgency ?? 50, 0, 100);
-  const retestScore = clamp(p.retestScore ?? 0, 0, 100);
-
-  let quality = 0.35 * coverage + 0.35 * reportScore + 0.2 * Math.min(100, foundPts * 2) + 0.1 * retestScore;
-  quality = clamp(quality, 0, 100);
-  const risk = clamp(shipUrgency * 0.55 + (100 - fixRate) * 0.45 - retestScore * 0.4, 0, 100);
-
-  const depositPct = clamp(p.depositPct ?? 0.2, 0.1, 0.5);
-  let payout = Math.round(p.fee * (1 - depositPct));
-  payout = Math.round(payout * (0.85 + quality / 200));
-  state.stats.cash += payout;
-  if (!state.progress) state.progress = { noOrderWeeks: 0, totalWeeks: 0, earnedTotal: 0, findingsTotal: 0 };
-  state.progress.earnedTotal = (state.progress.earnedTotal || 0) + Math.max(0, payout);
-
-  const repDelta = Math.round(quality / 25 - risk / 30 - (reportScore < 60 ? 1 : 0));
-  state.stats.reputation = clamp(state.stats.reputation + repDelta, 0, 100);
-
-  log(
-    state,
-    t(state, "log.direct.delivered", {
-      title: p.title,
-      report: reportScore,
-      coverage,
-      quality: Math.round(quality),
-      payout: fmtCash(state, payout),
-      repDelta: `${repDelta >= 0 ? "+" : ""}${repDelta}`,
-    }),
-    repDelta >= 2 ? "good" : repDelta < 0 ? "warn" : "info"
-  );
-
-  // 实战成长（更稳定）：交付得越扎实，涨点越明显；不再靠“点学习按钮”硬堆
-  {
-    let incSkill = 0;
-    let incWriting = 0;
-    let incComms = 0;
-    if (quality >= 78) {
-      incSkill = 1;
-      incWriting = reportScore >= 70 ? 1 : 0;
-      incComms = (p.cooperation ?? 0) >= 60 ? 1 : 0;
-    } else if (quality >= 62) {
-      incWriting = reportScore >= 70 ? 1 : 0;
-      incComms = (p.cooperation ?? 0) >= 70 ? 1 : 0;
-    }
-    if (incSkill || incWriting || incComms) {
-      state.stats.skill = clamp(state.stats.skill + incSkill, 0, 100);
-      state.stats.writing = clamp(state.stats.writing + incWriting, 0, 100);
-      state.stats.comms = clamp(state.stats.comms + incComms, 0, 100);
-      log(state, t(state, "log.growth.direct", { skill: incSkill, writing: incWriting, comms: incComms }), "good");
-    }
-  }
-
-  // 翻车挂起：高风险 + 低复测更容易出事
-  if (risk > 70 && retestScore < 40 && Math.random() < 0.35) {
-    state.stats.reputation = clamp(state.stats.reputation - ri(2, 6), 0, 100);
-    state.stats.compliance = clamp(state.stats.compliance + ri(2, 6), 0, 100);
-    log(state, t(state, "log.direct.postShipIssue", { title: p.title }), "bad");
-  }
-
-  return { payout, repDelta, quality, risk };
+function researchSkillKey(engineKey) {
+  if (engineKey === "dev") return "contract";
+  if (engineKey === "sec") return "security";
+  if (engineKey === "infra") return "infra";
+  if (engineKey === "eco") return "growth";
+  return "contract";
 }
 
-export function finishContest(state, c) {
-  const st = state.stats;
-  const submitted = c.submissions.filter((x) => x.status === "submitted" || x.status === "accepted" || x.status === "duplicated" || x.status === "rejected");
-  const evidence = clamp(c.evidence ?? 0, 0, 100);
+function memberById(state, id) {
+  return (state.team?.members || []).find((m) => m.id === id) || null;
+}
 
-  // 评审：提交才会进池子；evidence 越高，通过率更高
-  let acceptedPts = 0;
-  let acceptedN = 0;
-  let duplicated = 0;
-  let rejected = 0;
-  for (const s of submitted) {
-    const baseAcc = 0.35 + (evidence / 100) * 0.35 + (st.writing / 100) * 0.15;
-    const popPenalty = (c.popularity || 50) / 200; // 热度越高越卷
-    const acc = clamp(baseAcc - popPenalty, 0.05, 0.85);
-    const dup = clamp(0.12 + (c.popularity || 50) / 180, 0.05, 0.6);
-    const roll = Math.random();
-    if (roll < acc) {
-      if (Math.random() < dup) {
-        s.status = "duplicated";
-        duplicated += 1;
-      } else {
-        s.status = "accepted";
-        acceptedN += 1;
-        acceptedPts += s.points || 0;
+function researchCostForVersion(v) {
+  const vv = clamp(Math.round(v || 1), 1, 9);
+  return vv <= 2 ? 0 : Math.round(20 * (vv - 2));
+}
+
+function researchHoursForVersion(v) {
+  const vv = clamp(Math.round(v || 1), 1, 9);
+  // 让“科研需要时间但不会拖太久”：前期几小时，后期十几小时
+  return clamp(Math.round(6 + vv * 2.5), 6, 28);
+}
+
+export function startResearch(state, engineKey, assigneeIdOrNull) {
+  normalizeState(state);
+  if (!state.engine?.[engineKey]) return { ok: false, msg: "未知引擎。" };
+  if (state.research?.task) return { ok: false, msg: "已有进行中的研发（一次只能跑一项）。" };
+
+  const cur = clamp(Math.round(state.engine[engineKey].version || 1), 1, 9);
+  if (cur >= 9) return { ok: false, msg: "已满级。" };
+  const cost = researchCostForVersion(cur);
+  if ((state.resources?.techPoints ?? 0) < cost) return { ok: false, msg: `技术点不足：需要 ${cost}。` };
+
+  state.resources.techPoints -= cost;
+  const hoursTotal = researchHoursForVersion(cur);
+  state.research.task = {
+    engineKey,
+    targetVersion: clamp(cur + 1, 1, 9),
+    hoursTotal,
+    hoursDone: 0,
+    assigneeId: assigneeIdOrNull || null,
+  };
+  const who = assigneeIdOrNull ? memberById(state, assigneeIdOrNull)?.name || "（未知）" : "（未指派）";
+  log(state, `开始研发：${engineKey.toUpperCase()} v${cur}→v${cur + 1}（用时约 ${hoursTotal}h，指派：${who}，消耗技术点 ${cost}）`, "info");
+  return { ok: true };
+}
+
+export function setResearchAssignee(state, memberIdOrNull) {
+  normalizeState(state);
+  if (!state.research?.task) return { ok: false, msg: "当前没有进行中的研发。" };
+  state.research.task.assigneeId = memberIdOrNull || null;
+  return { ok: true };
+}
+
+export function tickResearch(state, deltaHours) {
+  normalizeState(state);
+  const t = state.research?.task;
+  if (!t) return;
+  const hours = Math.max(0, deltaHours || 0);
+  if (!hours) return;
+
+  const m = t.assigneeId ? memberById(state, t.assigneeId) : null;
+  const engineKey = t.engineKey || t.engineKey === 0 ? t.engineKey : null;
+  const skillKey = researchSkillKey(engineKey);
+  const skill = clampPct(m?.skills?.[skillKey] ?? 0);
+  const perkMul = typeof m?.perk?.researchSpeedMul === "number" ? m.perk.researchSpeedMul : 1;
+  const traitMul = m?.trait === "学得快" ? 1.08 : m?.trait === "冲劲" ? 1.05 : 1;
+  const speed = clamp((0.55 + skill / 100) * perkMul * traitMul, 0.55, 1.85); // 指派合适的人会更快
+  // IMPORTANT: keep fractional progress; rounding each frame will stall at small deltaHours
+  t.hoursDone = clamp((Number(t.hoursDone) || 0) + hours * speed, 0, 999999);
+
+  if (t.hoursDone >= t.hoursTotal) {
+    if (t.kind === "node" && t.nodeId) {
+      const node = researchNodeById(t.nodeId);
+      applyResearchNodeEffect(state, t.nodeId);
+      // repeatable nodes should not be marked as permanently unlocked
+      if (node?.kind !== "postmortem") {
+        state.research.unlocked = Array.isArray(state.research.unlocked) ? state.research.unlocked : [];
+        if (!state.research.unlocked.includes(t.nodeId)) state.research.unlocked.push(t.nodeId);
+        log(state, `科研完成：${node?.title || t.nodeId}。`, "good");
       }
+      state.research.task = null;
+      return;
+    }
+
+    const key = t.engineKey;
+    const targetV = clamp(Math.round(t.targetVersion || 1), 1, 9);
+    if (state.engine?.[key]) state.engine[key].version = targetV;
+    log(state, `研发完成：${key.toUpperCase()} 引擎升级到 v${targetV}。`, "good");
+    state.research.task = null;
+  }
+}
+
+export function estimateDailyCashDelta(state) {
+  normalizeState(state);
+  const salaryDaily = Math.round((state.team?.members || []).reduce((acc, m) => acc + Math.max(0, Math.round(m.salaryWeekly || 0)), 0) / 7);
+  const livingCostDaily = computeLivingCostDaily(state);
+  const prodProfitDaily = Math.round((state.active?.products || []).reduce((acc, p) => acc + Math.round(p.kpi?.profit || 0), 0));
+  return {
+    salaryDaily,
+    livingCostDaily,
+    prodProfitDaily,
+    net: Math.round(prodProfitDaily - salaryDaily - livingCostDaily),
+  };
+}
+
+function computeLivingCostDaily(state) {
+  normalizeState(state);
+  const members = state.team?.members || [];
+  const perksDelta = members.reduce((acc, m) => acc + Math.round(m?.perk?.livingCostDelta || 0), 0);
+  // 办公/生活杂费：先按固定 100/天（更符合“日常消耗”的体感），perk 可微调
+  return Math.max(0, Math.round(100 + perksDelta));
+}
+
+// ===== Research tree (real "tree UI") =====
+
+export const RESEARCH_TREE = {
+  // 单棵大树（DAG）：多分支 + 多前置交汇节点
+  nodes: [
+    // hub
+    { id: "hub", kind: "meta", title: "研发中心", hint: "从这里开始点亮分支。", effectLabel: "起点", pos: { x: 0, y: 240 }, requires: [] },
+
+    // Postmortem / review (repeatable)
+    { id: "postmortem_zena", kind: "postmortem", engineKey: "eco", title: "泽娜复盘：已知搭配", hint: "选择一个历史项目/产品做复盘；完成后才能“知道”该类型的已知搭配。可重复。", effectLabel: "解锁情报", pos: { x: 260, y: 240 }, requires: ["hub"] },
+
+    // Dev branch
+    { id: "ci_cd", kind: "engine_upgrade", engineKey: "dev", targetVersion: 2, title: "CI/CD 基础管线", hint: "自动化构建/测试/发布。", effectLabel: "Dev +1", pos: { x: 260, y: 120 }, requires: ["hub"] },
+    { id: "component_lib", kind: "engine_upgrade", engineKey: "dev", targetVersion: 3, title: "可复用组件库", hint: "更快拼装更少返工。", effectLabel: "Dev +1", pos: { x: 520, y: 60 }, requires: ["ci_cd"] },
+    { id: "plugin_arch", kind: "engine_slots", engineKey: "dev", slotsDelta: 1, title: "插件化架构", hint: "允许装配更多模块。", effectLabel: "Dev 插槽 +1", pos: { x: 520, y: 180 }, requires: ["ci_cd"] },
+    { id: "mod_build", kind: "engine_upgrade", engineKey: "dev", targetVersion: 4, title: "模块化构建系统", hint: "工程化进阶：速度与质量增强。", effectLabel: "Dev +1", pos: { x: 780, y: 120 }, requires: ["component_lib", "plugin_arch"] },
+
+    // Sec branch
+    { id: "threat_model", kind: "engine_upgrade", engineKey: "sec", targetVersion: 2, title: "威胁建模方法论", hint: "更早识别攻击面。", effectLabel: "Sec +1", pos: { x: 260, y: 360 }, requires: ["hub"] },
+    { id: "audit_rules", kind: "engine_upgrade", engineKey: "sec", targetVersion: 3, title: "自动化审计规则集", hint: "常见漏洞模式工具化。", effectLabel: "Sec +1", pos: { x: 520, y: 300 }, requires: ["threat_model"] },
+    { id: "sec_toolchain", kind: "engine_slots", engineKey: "sec", slotsDelta: 1, title: "安全工具链扩展", hint: "更丰富的安全工具组合。", effectLabel: "Sec 插槽 +1", pos: { x: 520, y: 420 }, requires: ["threat_model"] },
+    { id: "fuzz_formal", kind: "engine_upgrade", engineKey: "sec", targetVersion: 4, title: "模糊测试 + 形式化", hint: "上线前安全深度显著提升。", effectLabel: "Sec +1", pos: { x: 780, y: 360 }, requires: ["audit_rules", "sec_toolchain"] },
+
+    // Infra branch
+    { id: "observability", kind: "engine_upgrade", engineKey: "infra", targetVersion: 2, title: "可观测性三件套", hint: "Metrics/Logs/Tracing。", effectLabel: "Infra +1", pos: { x: 260, y: 600 }, requires: ["hub"] },
+    { id: "autoscale_cost", kind: "engine_upgrade", engineKey: "infra", targetVersion: 3, title: "自动扩缩容与成本模型", hint: "SLA 更稳、成本更可控。", effectLabel: "Infra +1", pos: { x: 520, y: 540 }, requires: ["observability"] },
+    { id: "infra_suite", kind: "engine_slots", engineKey: "infra", slotsDelta: 1, title: "运维自动化套件", hint: "应急/观测组合更强。", effectLabel: "Infra 插槽 +1", pos: { x: 520, y: 660 }, requires: ["observability"] },
+    { id: "incident_drill", kind: "engine_upgrade", engineKey: "infra", targetVersion: 4, title: "演练式应急预案", hint: "事故损失可控，恢复更快。", effectLabel: "Infra +1", pos: { x: 780, y: 600 }, requires: ["autoscale_cost", "infra_suite"] },
+
+    // Eco branch
+    { id: "funnel_dash", kind: "engine_upgrade", engineKey: "eco", targetVersion: 2, title: "增长漏斗仪表盘", hint: "定位转化瓶颈。", effectLabel: "Eco +1", pos: { x: 260, y: 840 }, requires: ["hub"] },
+    { id: "dist_templates", kind: "engine_upgrade", engineKey: "eco", targetVersion: 3, title: "渠道素材与分发模板", hint: "冷启动更强。", effectLabel: "Eco +1", pos: { x: 520, y: 780 }, requires: ["funnel_dash"] },
+    { id: "growth_lab", kind: "engine_slots", engineKey: "eco", slotsDelta: 1, title: "增长实验平台", hint: "A/B 与实验编排。", effectLabel: "Eco 插槽 +1", pos: { x: 520, y: 900 }, requires: ["funnel_dash"] },
+    { id: "ecosystem_playbook", kind: "engine_upgrade", engineKey: "eco", targetVersion: 4, title: "生态合作打法", hint: "分发/生态复利更强。", effectLabel: "Eco +1", pos: { x: 780, y: 840 }, requires: ["dist_templates", "growth_lab"] },
+
+    // Intersections / new unlocks (DAG joins)
+    { id: "safe_release", kind: "global_mod", title: "安全发布流程", hint: "CI/CD + 威胁建模 → 更少线上事故", effectLabel: "事故风险 -", pos: { x: 1040, y: 240 }, requires: ["ci_cd", "threat_model"], mod: { riskSecurityDelta: -2 } },
+    { id: "prod_analytics", kind: "global_mod", title: "产品数据闭环", hint: "漏斗仪表盘 + 可观测性 → 留存与增长更稳", effectLabel: "ARPU +", pos: { x: 1040, y: 420 }, requires: ["funnel_dash", "observability"], mod: { arpuMul: 1.15 } },
+    { id: "cost_optimization", kind: "global_mod", title: "成本优化体系", hint: "成本模型 + 分发模板 → 获客更便宜、infra 更省", effectLabel: "成本 -", pos: { x: 1040, y: 600 }, requires: ["autoscale_cost", "dist_templates"], mod: { infraCostMul: 0.88 } },
+    { id: "security_tooling_ops", kind: "global_mod", title: "安全运营联动", hint: "安全工具链 + 应急演练 → 降低安全损失与安全成本", effectLabel: "安全成本 -", pos: { x: 1040, y: 780 }, requires: ["sec_toolchain", "incident_drill"], mod: { secCostMul: 0.88, riskSecurityDelta: -2 } },
+
+    { id: "platform_scale", kind: "global_mod", title: "规模化交付体系", hint: "模块化构建 + 生态合作 → 更快做更大项目", effectLabel: "进度 +", pos: { x: 1300, y: 510 }, requires: ["mod_build", "ecosystem_playbook"], mod: { projectSpeedMul: 1.08 } },
+  ],
+};
+
+function researchNodeById(id) {
+  return (RESEARCH_TREE.nodes || []).find((n) => n.id === id) || null;
+}
+
+export function researchNodeStatus(state, nodeId) {
+  normalizeState(state);
+  const node = researchNodeById(nodeId);
+  if (!node) return { kind: "missing" };
+  const task = state.research?.task || null;
+  const inProgress = task && task.nodeId === nodeId;
+
+  // done?
+  if (node.kind === "engine_upgrade") {
+    const cur = clamp(Math.round(state.engine?.[node.engineKey]?.version ?? 1), 1, 9);
+    if (cur >= node.targetVersion) return { kind: "done" };
+  } else if (node.kind === "postmortem") {
+    // repeatable: never "done"
+  } else if (node.kind === "meta") {
+    return { kind: "done" };
+  } else {
+    if (Array.isArray(state.research?.unlocked) && state.research.unlocked.includes(nodeId)) return { kind: "done" };
+  }
+  if (inProgress) return { kind: "researching" };
+
+  // unlocked prerequisites?
+  const reqs = Array.isArray(node.requires) ? node.requires : [];
+  const hasReq = (rid) => {
+    if (rid === "hub") return true;
+    const reqNode = researchNodeById(rid);
+    if (!reqNode) return false;
+    if (reqNode.kind === "engine_upgrade") {
+      const cur = clamp(Math.round(state.engine?.[reqNode.engineKey]?.version ?? 1), 1, 9);
+      return cur >= (reqNode.targetVersion || 1);
+    }
+    if (reqNode.kind === "meta") return true;
+    return Array.isArray(state.research?.unlocked) && state.research.unlocked.includes(rid);
+  };
+  const ok = reqs.every(hasReq);
+  return ok ? { kind: "available" } : { kind: "locked" };
+}
+
+export function startResearchNode(state, nodeId, assigneeIdOrNull, payload = null) {
+  normalizeState(state);
+  const node = researchNodeById(nodeId);
+  if (!node) return { ok: false, msg: "未知科研节点。" };
+  if (state.research?.task) return { ok: false, msg: "已有进行中的研发（一次只能跑一项）。" };
+
+  const st = researchNodeStatus(state, nodeId);
+  if (st.kind === "done") return { ok: false, msg: "该节点已完成。" };
+  if (st.kind === "locked") return { ok: false, msg: "前置未解锁。" };
+
+  // derive cost/time
+  let costTech = 0;
+  let hoursTotal = 8;
+  if (node.kind === "engine_upgrade") {
+    // 统一沿用版本成本：v1->v2、v2->v3 免费
+    const cur = clamp(Math.round(state.engine?.[node.engineKey]?.version ?? 1), 1, 9);
+    costTech = researchCostForVersion(cur);
+    hoursTotal = researchHoursForVersion(cur);
+  } else {
+    // slot/global nodes: moderate cost/time
+    if (node.kind === "postmortem") {
+      costTech = 6;
+      hoursTotal = 10;
+      const pid = payload?.productId ? String(payload.productId) : "";
+      if (!pid) return { ok: false, msg: "复盘需要选择一个历史产品/项目。" };
+      const prod = (state.active?.products || []).find((x) => x.id === pid) || null;
+      if (!prod) return { ok: false, msg: "找不到该历史产品/项目。" };
     } else {
-      s.status = "rejected";
-      rejected += 1;
+      costTech = node.kind === "global_mod" ? 12 : 8;
+      hoursTotal = node.kind === "global_mod" ? 14 : 10;
     }
   }
+  if ((state.resources?.techPoints ?? 0) < costTech) return { ok: false, msg: `技术点不足：需要 ${costTech}。` };
 
-  const score = acceptedPts + Math.round(evidence / 10);
-  // 让“整场 finding 总量”不会比玩家离谱太多：用玩家 score 上限约束对手强度
-  let fieldScore = Math.round(rnd(35, 120) + (c.popularity || 50) * 0.7 + (c.totalFindingsHint || 12) * 2);
-  fieldScore = Math.min(fieldScore, score * 2.2 + 110);
-  // share：基础按你贡献/证据算，再叠加“dup 多=>少拿”“solo 多=>多拿”
-  const baseShare = acceptedPts > 0 ? score / (score + fieldScore) : 0;
-  const share = acceptedPts > 0 ? clamp(baseShare, 0.03, 0.55) : 0;
-  const dupRatio = duplicated / Math.max(1, submitted.length);
-  const dupPenalty = clamp(1 - dupRatio * 0.85, 0.35, 1);
-  const soloBonus = clamp(1 + acceptedN * 0.06 + Math.max(0, acceptedPts - 6) * 0.015, 1, 1.9);
-  let payout = Math.round((c.prizePool || 0) * share * dupPenalty * soloBonus);
-  payout = clamp(payout, 0, Math.round((c.prizePool || 0) * 0.65));
-  state.stats.cash += payout;
-  if (!state.progress) state.progress = { noOrderWeeks: 0, totalWeeks: 0, earnedTotal: 0, findingsTotal: 0 };
-  state.progress.earnedTotal = (state.progress.earnedTotal || 0) + Math.max(0, payout);
-
-  let ratingDelta = 0;
-  if (submitted.length > 0) ratingDelta = Math.round(2 + acceptedPts / 6 - duplicated / 2 - rejected / 3);
-  state.stats.platformRating = clamp(state.stats.platformRating + ratingDelta, 0, 100);
-
-  const repDelta = acceptedPts > 0 ? Math.round(acceptedPts / 6 - rejected / 2) : 0;
-  state.stats.reputation = clamp(state.stats.reputation + repDelta, 0, 100);
-
-  const tone = acceptedPts >= 10 ? "good" : acceptedPts === 0 ? "bad" : "info";
-  const note = submitted.length === 0 ? t(state, "log.contest.noSubmitNote") : "";
-  log(
-    state,
-    t(state, "log.contest.settled", {
-      title: c.title,
-      submitted: submitted.length,
-      acceptedPts,
-      duplicated,
-      rejected,
-      payout: fmtCash(state, payout),
-      ratingDelta: `${ratingDelta >= 0 ? "+" : ""}${ratingDelta}`,
-      note,
-    }),
-    tone
-  );
-
-  // 实战成长（更稳定）：打比赛=涨点。哪怕被 reject，也能学到“别写这种破玩意”。
-  {
-    let incSkill = 0;
-    let incWriting = 0;
-    let incTooling = 0;
-    if (submitted.length > 0) {
-      incWriting = 1;
-      incTooling = Math.random() < 0.55 ? 1 : 0;
-      if (acceptedPts > 0) incSkill = 1;
-      if (acceptedPts >= 10) incSkill += 1;
-    }
-    if (incSkill || incWriting || incTooling) {
-      state.stats.skill = clamp(state.stats.skill + incSkill, 0, 100);
-      state.stats.writing = clamp(state.stats.writing + incWriting, 0, 100);
-      state.stats.tooling = clamp(state.stats.tooling + incTooling, 0, 100);
-      log(state, t(state, "log.growth.contest", { skill: incSkill, writing: incWriting, tooling: incTooling }), "info");
-    }
-  }
-
-  return { payout, acceptedPts, duplicated, rejected, ratingDelta, repDelta };
+  state.resources.techPoints -= costTech;
+  state.research.task = {
+    kind: "node",
+    nodeId,
+    engineKey: node.engineKey || null,
+    targetVersion: node.targetVersion || null,
+    hoursTotal,
+    hoursDone: 0,
+    assigneeId: assigneeIdOrNull || null,
+    costTech,
+    payload: payload && typeof payload === "object" ? payload : null,
+  };
+  return { ok: true };
 }
 
-export function settleProjects(state) {
-  // 直客
-  for (const p of [...state.active.direct]) {
-    p.deadlineWeeks -= 1;
-    if (p.deadlineWeeks <= 0 && !p.report.delivered) {
-      const reportScore = clamp(p.report?.draft ?? 0, 0, 100);
-      if (reportScore < 50) {
-        p.deadlineWeeks = 1;
-        adjustAfterAction(state, { mood: -2 });
-        log(state, t(state, "log.direct.delayedNeedReport", { title: p.title, report: reportScore }), "warn");
-        continue;
-      }
-      deliverDirect(state, p);
-      p.report.delivered = true;
-      p.stage = "done";
-      state.active.direct = state.active.direct.filter((x) => x.id !== p.id);
+function applyResearchNodeEffect(state, nodeId) {
+  normalizeState(state);
+  const node = researchNodeById(nodeId);
+  if (!node) return;
+
+  if (node.kind === "postmortem") {
+    const pid = state.research?.task?.payload?.productId ? String(state.research.task.payload.productId) : "";
+    const prod = pid ? (state.active?.products || []).find((x) => x.id === pid) : null;
+    const archetype = prod?.archetype ? String(prod.archetype) : "";
+    if (!archetype) {
+      log(state, "复盘完成，但没有得到有效的项目类型信息。", "warn");
+      return;
     }
+    state.knowledge = state.knowledge || { zenaKnownArchetypes: [] };
+    state.knowledge.zenaKnownArchetypes = Array.isArray(state.knowledge.zenaKnownArchetypes) ? state.knowledge.zenaKnownArchetypes : [];
+    if (!state.knowledge.zenaKnownArchetypes.includes(archetype)) state.knowledge.zenaKnownArchetypes.push(archetype);
+    log(state, `泽娜复盘完成：已解锁【${archetype.toUpperCase()}】类型的已知搭配表。`, "good");
+    return;
   }
 
-  // 平台
-  for (const c of [...state.active.platform]) {
-    c.deadlineWeeks -= 1;
-    if (c.deadlineWeeks <= 0) {
-      finishContest(state, c);
-      c.stage = "done";
-      state.active.platform = state.active.platform.filter((x) => x.id !== c.id);
+  if (node.kind === "engine_upgrade") {
+    const key = node.engineKey;
+    if (key && state.engine?.[key]) {
+      state.engine[key].version = clamp(Math.round(node.targetVersion || 1), 1, 9);
     }
+    return;
   }
 
-  // 公司任务（deadline miss 的“现实代价”）
-  for (const tk of [...(state.active.company || [])]) {
-    tk.deadlineWeeks -= 1;
-    if (tk.deadlineWeeks <= 0 && (tk.progress || 0) < 100) {
-      if (state.employment?.employed) {
-        state.employment.performance = clamp((state.employment.performance || 50) - 3, 0, 100);
-        state.employment.trust = clamp((state.employment.trust || 50) - 2, 0, 100);
-        state.employment.politics = clamp((state.employment.politics || 20) + 4, 0, 100);
-      }
-      adjustAfterAction(state, { mood: -2 });
-      log(state, t(state, "log.companyTicket.missedDeadline", { title: tk.title }), "warn");
-      tk.deadlineWeeks = 1; // 给 1 周缓冲
+  if (node.kind === "engine_slots") {
+    const key = node.engineKey;
+    const d = clamp(Math.round(node.slotsDelta || 0), 0, 9);
+    if (key && state.engine?.[key]) {
+      state.engine[key].slots = clamp(Math.round((state.engine[key].slots || 1) + d), 1, 9);
     }
+    return;
   }
+
+  if (node.kind === "global_mod") {
+    // effect is applied by being in research.unlocked; no immediate mutation needed
+    return;
+  }
+}
+
+// ===== Weekly settlement =====
+
+function salaryBurnWeekly(state) {
+  const ms = state.team?.members || [];
+  const total = ms.reduce((acc, m) => acc + Math.max(0, Math.round(m.salaryWeekly || 0)), 0);
+  return total;
+}
+
+export function tickLiveProductsWeekly(state) {
+  normalizeState(state);
+  const products = state.active.products || [];
+
+  for (const prod of products) {
+    ensureProductFields(prod);
+    const k = prod.kpi || {};
+    const scores = prod.scores || {};
+    const ops = prod.ops || {};
+
+    // adoption update
+    const natural = clamp(0.015 + scores.productFit / 520 + scores.growth / 650 - prod.risk.security / 500, -0.03, 0.06);
+    const incentiveBoost = clamp((ops.incentivesBudgetWeekly || 0) / 120000, 0, 0.08);
+    const emissionsBoost = clamp((ops.emissions || 0) * 0.06, 0, 0.06);
+    const crashPenalty = prod.risk.security >= 70 ? -0.05 : 0;
+    const growthRate = natural + incentiveBoost + emissionsBoost + crashPenalty;
+
+    k.users = Math.round(clamp((k.users || 0) * (1 + growthRate), 0, 9_999_999));
+    const retention = clampPct((k.retention || 30) + (scores.productFit - 50) * 0.02 - incentiveBoost * 20 - crashPenalty * 30);
+    k.retention = retention;
+    k.dau = Math.round(clamp(k.users * clamp(0.03 + retention / 300, 0.03, 0.25), 0, k.users));
+
+    // DeFi metrics
+    if (k.tvl != null && k.volume != null) {
+      const trust = clamp(0.5 + scores.security / 200 + scores.compliance / 260 - prod.risk.security / 220, 0.2, 1.25);
+      const tvlRate = clamp(growthRate * 0.8 + (trust - 0.8) * 0.06, -0.08, 0.10);
+      k.tvl = Math.round(clamp((k.tvl || 0) * (1 + tvlRate), 0, 9_999_999_999));
+      const volumeRate = clamp(0.08 + trust * 0.15 + incentiveBoost * 0.6, 0.05, 0.6);
+      k.volume = Math.round(clamp((k.tvl || 0) * volumeRate, 0, 9_999_999_999));
+    }
+
+    // revenue & profit
+    const feeRate = clamp((k.feeRateBps || 0) / 10_000, 0, 0.02);
+    const vol = Math.max(0, Math.round(k.volume || 0));
+    const fees = Math.round(vol * feeRate);
+    const revenue = Math.round(fees * clamp(k.protocolTakePct || 0.35, 0.05, 0.95));
+
+    const infraCost = Math.round(600 + (k.dau || 0) * 0.6 + (vol / 1_000_000) * 120);
+    const secCost = Math.round(350 + (100 - scores.security) * 8);
+    const buyback = Math.round(revenue * clamp(ops.buybackPct || 0, 0, 0.5));
+    const incentives = Math.round(clamp(ops.incentivesBudgetWeekly || 0, 0, 999999999));
+
+    const profit = revenue - infraCost - secCost - incentives - buyback;
+    k.fees = fees;
+    k.revenue = revenue;
+    k.profit = profit;
+    k.cumProfit = Math.round((Number(k.cumProfit) || 0) + profit);
+    k.cumRevenue = Math.round((Number(k.cumRevenue) || 0) + revenue);
+
+    // apply cash
+    state.resources.cash = Math.round((state.resources.cash || 0) + profit);
+    state.progress.earnedTotal = Math.round((state.progress.earnedTotal || 0) + Math.max(0, profit));
+
+    // risk drift
+    prod.risk.security = clampPct((prod.risk.security || 10) + (100 - scores.security) * 0.02 + ri(-2, 3) - (ops.incentivesBudgetWeekly > 0 ? 1 : 0));
+    prod.risk.compliance = clampPct((prod.risk.compliance || 10) + (100 - scores.compliance) * 0.02 + ri(-2, 3) + (ops.emissions > 0.3 ? 2 : 0));
+  }
+}
+
+function recordProductHistoryDaily(state) {
+  normalizeState(state);
+  for (const prod of state.active.products || []) {
+    prod.history = Array.isArray(prod.history) ? prod.history : [];
+    const k = prod.kpi || {};
+    if (typeof k.tokenPrice !== "number") k.tokenPrice = clamp(0.5 + rnd(-0.1, 0.2), 0.05, 8);
+    prod.history.push({
+      t: { ...(state.now || {}) },
+      dau: Math.round(k.dau || 0),
+      tvl: Math.round(k.tvl || 0),
+      profit: Math.round(k.profit || 0),
+      tokenPrice: Number(k.tokenPrice) || 0,
+      cash: Math.round(state.resources?.cash || 0),
+    });
+    // keep last ~90 days
+    prod.history = prod.history.slice(-90);
+  }
+}
+
+export function tickLiveProductsDaily(state) {
+  normalizeState(state);
+  const products = state.active.products || [];
+
+  for (const prod of products) {
+    const k = prod.kpi || {};
+    const scores = prod.scores || {};
+    const ops = prod.ops || {};
+    ensureProductFields(prod);
+
+    // daily adoption update (approx weekly/7)
+    const naturalW = clamp(0.015 + scores.productFit / 520 + scores.growth / 650 - prod.risk.security / 500, -0.03, 0.06);
+    const incentiveBoostW = clamp((ops.incentivesBudgetWeekly || 0) / 120000, 0, 0.08);
+    const emissionsBoostW = clamp((ops.emissions || 0) * 0.06, 0, 0.06);
+    const crashPenaltyW = prod.risk.security >= 70 ? -0.05 : 0;
+    const growthRateW = naturalW + incentiveBoostW + emissionsBoostW + crashPenaltyW;
+    const growthRateD = growthRateW / 7;
+
+    k.users = Math.round(clamp((k.users || 0) * (1 + growthRateD), 0, 9_999_999));
+    const retentionW = clampPct((k.retention || 30) + (scores.productFit - 50) * 0.02 - incentiveBoostW * 20 - crashPenaltyW * 30);
+    // smooth retention daily
+    k.retention = clampPct((k.retention || 30) * 0.8 + retentionW * 0.2);
+    k.dau = Math.round(clamp(k.users * clamp(0.03 + k.retention / 300, 0.03, 0.25), 0, k.users));
+
+    // DeFi metrics daily
+    if (k.tvl != null && k.volume != null) {
+      const trust = clamp(0.5 + scores.security / 200 + scores.compliance / 260 - prod.risk.security / 220, 0.2, 1.25);
+      const tvlRateW = clamp(growthRateW * 0.8 + (trust - 0.8) * 0.06, -0.08, 0.10);
+      const tvlRateD = tvlRateW / 7;
+      k.tvl = Math.round(clamp((k.tvl || 0) * (1 + tvlRateD), 0, 9_999_999_999));
+
+      const volumeRateW = clamp(0.08 + trust * 0.15 + incentiveBoostW * 0.6, 0.05, 0.6);
+      const volumeRateD = volumeRateW / 7;
+      k.volume = Math.round(clamp((k.tvl || 0) * volumeRateD, 0, 9_999_999_999));
+    }
+
+    // revenue & profit daily
+    // 1) DeFi 业务：volume * feeRate
+    // 2) 非 DeFi 产品也应有基础商业化（订阅/服务费/增值）：按 DAU 给一个轻量 ARPU
+    const feeRate = clamp((k.feeRateBps || 0) / 10_000, 0, 0.02);
+    const vol = Math.max(0, Math.round(k.volume || 0));
+    const fees = Math.round(vol * feeRate);
+    const take = clamp(k.protocolTakePct || 0.35, 0.05, 0.95);
+    const feeRevenue = Math.round(fees * take);
+
+    // Base revenue: makes early ops less punishing, especially for wallet/rpc/indexer
+    const dau = Math.max(0, Math.round(k.dau || 0));
+    const unlocked = Array.isArray(state.research?.unlocked) ? state.research.unlocked : [];
+    const has = (id) => unlocked.includes(id);
+    const arpuMulGlobal = has("prod_analytics") ? 1.15 : 1.0;
+    const infraCostMulGlobal = has("cost_optimization") ? 0.88 : 1.0;
+    const secCostMulGlobal = has("security_tooling_ops") ? 0.88 : 1.0;
+    const arpuBase = clamp(0.08 + (scores.productFit || 50) / 900 + (scores.growth || 50) / 1100, 0.06, 0.35) * arpuMulGlobal;
+    const archetype = String(prod.archetype || "");
+    const arpuMul = archetype === "rpc" || archetype === "indexer" ? 2.2 : archetype === "wallet" ? 1.4 : 1.0;
+    // DeFi 也有“非交易”收入，但更低
+    const isDefi = k.tvl != null && k.volume != null;
+    const baseRevenue = Math.round(dau * arpuBase * arpuMul * (isDefi ? 0.45 : 1.0));
+
+    const revenue = Math.round(feeRevenue + baseRevenue);
+
+    // Costs: tune down to make early-game less negative
+    const infraCostW = Math.round((240 + (dau || 0) * 0.18 + (vol / 1_000_000) * 28) * infraCostMulGlobal);
+    const secCostW = Math.round((160 + (100 - (scores.security || 50)) * 3.2) * secCostMulGlobal);
+    const buybackW = Math.round(revenue * clamp(ops.buybackPct || 0, 0, 0.5));
+    const incentivesW = Math.round(clamp(ops.incentivesBudgetWeekly || 0, 0, 999999999));
+
+    const infraCost = Math.round(infraCostW / 7);
+    const secCost = Math.round(secCostW / 7);
+    const buyback = Math.round(buybackW / 7);
+    const incentives = Math.round(incentivesW / 7);
+
+    const profit = revenue - infraCost - secCost - incentives - buyback;
+    k.fees = fees;
+    k.revenue = revenue;
+    k.profit = profit;
+    k.cumProfit = Math.round((Number(k.cumProfit) || 0) + profit);
+    k.cumRevenue = Math.round((Number(k.cumRevenue) || 0) + revenue);
+
+    // apply cash
+    state.resources.cash = Math.round((state.resources.cash || 0) + profit);
+    state.progress.earnedTotal = Math.round((state.progress.earnedTotal || 0) + Math.max(0, profit));
+
+    // risk drift daily (milder)
+    prod.risk.security = clampPct((prod.risk.security || 10) + (100 - scores.security) * 0.004 + ri(-1, 2) - (ops.incentivesBudgetWeekly > 0 ? 0.3 : 0));
+    prod.risk.compliance = clampPct((prod.risk.compliance || 10) + (100 - scores.compliance) * 0.004 + ri(-1, 2) + (ops.emissions > 0.3 ? 0.6 : 0));
+
+    // token price (daily) - responds to ops params + fundamentals
+    const token0 = typeof k.tokenPrice === "number" ? k.tokenPrice : 1;
+    const rev = Math.max(0, Number(k.revenue) || 0);
+    const prof = Number(k.profit) || 0;
+    const margin = rev > 0 ? clamp(prof / rev, -1, 1) : 0;
+    const buybackBoost = clamp(Number(ops.buybackPct) || 0, 0, 0.5) * 0.03;
+    const emissionPenalty = clamp(Number(ops.emissions) || 0, 0, 1) * 0.035;
+    const incentiveHype = clamp((Number(ops.incentivesBudgetWeekly) || 0) / 200000, 0, 0.05) * 0.01;
+    const growthTilt = (clampPct(scores.growth || 50) - 50) / 25000;
+    const qualityTilt = (clampPct(scores.security || 50) - 50) / 45000 + (clampPct(scores.techQuality || 50) - 50) / 60000;
+    const riskPenalty = (clampPct(prod.risk.security || 10) / 100) * 0.010 + (clampPct(prod.risk.compliance || 10) / 100) * 0.006;
+    const profitTilt = margin * 0.010;
+    const baseDrift = 0.0015; // mild bull bias to feel alive
+    let rD = baseDrift + growthTilt + qualityTilt + profitTilt + buybackBoost - emissionPenalty + incentiveHype - riskPenalty + rnd(-0.008, 0.008);
+    // occasional shock when risk is high
+    if ((prod.risk.security || 0) >= 75 && Math.random() < 0.06) rD -= rnd(0.08, 0.22);
+    rD = clamp(rD, -0.18, 0.18);
+    k.tokenPrice = clamp(token0 * (1 + rD), 0.01, 9999);
+  }
+}
+
+function salaryBurnDaily(state) {
+  const weekly = salaryBurnWeekly(state);
+  return Math.round(weekly / 7);
+}
+
+export function tickDay(state) {
+  normalizeState(state);
+
+  // salaries daily
+  const sal = salaryBurnDaily(state);
+  state.resources.cash -= sal;
+
+  // living/office overhead daily
+  const living = computeLivingCostDaily(state);
+  state.resources.cash -= living;
+
+  // products daily economics
+  tickLiveProductsDaily(state);
+
+  // global risk drift tied to products (daily)
+  const products = state.active.products || [];
+  if (products.length > 0) {
+    const avgSec = products.reduce((a, p) => a + clampPct(p.risk?.security ?? 0), 0) / products.length;
+    const avgComp = products.reduce((a, p) => a + clampPct(p.risk?.compliance ?? 0), 0) / products.length;
+    state.resources.securityRisk = clampPct((state.resources.securityRisk || 0) * 0.82 + avgSec * 0.18 + ri(-1, 2));
+    state.resources.complianceRisk = clampPct((state.resources.complianceRisk || 0) * 0.82 + avgComp * 0.18 + ri(-1, 2));
+  } else {
+    state.resources.securityRisk = clampPct((state.resources.securityRisk || 0) + ri(-2, 1));
+    state.resources.complianceRisk = clampPct((state.resources.complianceRisk || 0) + ri(-2, 1));
+  }
+
+  // light daily noise so charts move even early game
+  if (Math.random() < 0.06) state.resources.community = clampPct(state.resources.community + ri(0, 2));
+  if (Math.random() < 0.04) state.resources.complianceRisk = clampPct(state.resources.complianceRisk + ri(0, 2));
+
+  recordProductHistoryDaily(state);
+}
+
+export function tickWeek(state) {
+  normalizeState(state);
+
+  // inbox optional events (weekly cadence, doesn't interrupt)
+  maybeGenerateInboxWeekly(state);
+
+  seedMarket(state, false);
 }
 

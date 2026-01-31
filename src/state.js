@@ -1,88 +1,67 @@
 import { clamp, ri } from "./utils.js?v=57";
-import { setLang, t } from "./i18n.js?v=57";
 
 export function defaultState() {
   const s = {
     version: 1,
     settings: {
-      lang: "en",
-      healthCap: 150, // 精力/心态上限（血更厚）
-      // 赛季长度：默认按“52 周”玩（不再 12 周速通人生）
-      // 可选：12/24/36/52（实现上允许其它值，但 UI 只给这几个）
       seasonWeeks: 52,
-      auto: {
-        enabled: false,
-        focus: "balanced", // balanced|direct|platform|company|incident|research|survival
-        allowQuitJob: false,
-        allowAcceptJob: false,
-        autoEndWeek: true,
-        stepMs: 2000,
-        minStaminaPct: 35,
-        minMoodPct: 30,
+      layout: {
+        colLeft: 420,
       },
     },
-    now: { year: 1, week: 1 },
+    now: { year: 2017, week: 1, day: 1 },
+    time: { paused: true, speed: 1, elapsedHours: 0, lastTs: 0, resumeAfterStageModal: false },
     player: {
-      name: "马某某·审计师",
-      title: "自由审计师（从零开荒）", // 默认中文；切换到英文时会由 setLang 自动替换为英文版默认 title
+      name: "马某某·Builder",
+      title: "Web3 项目开发大亨（从零开荒）",
     },
-    stats: {
-      skill: 38,
-      comms: 36,
-      writing: 33,
-      tooling: 30,
-      stamina: 105,
-      mood: 105,
-      cash: 100000,
-      reputation: 12,
-      brand: 8,
-      compliance: 6,
-      network: 18,
-      platformRating: 8,
-    },
-    // 现实生活：本周工时（影响行动点上限）
-    schedule: { hoursPerDay: 8, locked: false },
-    ap: { max: 0, now: 0 },
-    market: { direct: [], platform: [], jobs: [] },
-    active: { direct: [], platform: [], company: [] },
-    selectedTarget: null,
-    log: [],
-    x: {
-      // X（推特）时间线：纯文案氛围，不影响数值（后续可拓展为事件/舆情系统）
-      feed: [],
-    },
-    employment: {
-      employed: false,
-      companyKey: null,
-      companyName: null,
-      companyType: null, // 'exchange'|'sec'
-      workMode: "remote", // 'remote'|'onsite'
+    company: {
+      name: "独立 Builder 工作室",
       level: 1,
-      salaryWeekly: 0,
-      weeksEmployed: 0, // 入职后已过周数（用于 YH 事件保底等）
-      yhToxicTriggered: false, // YH（抽象）恶心事件：入职后 3 周必触发一次的标记
-      promoProgress: 0, // 晋升进度：每周累积（基础 + 声望/平台评级加成），达到阈值自动升职
-      performance: 50,
-      trust: 50,
-      politics: 20,
-      manager: { archetype: "normal", toxicity: 15 },
-      vanityKpi: { mode: "none", intensity: 0 }, // 'none'|'loc'|'refactor'
     },
-    negotiation: null, // { kind:'direct', ... } 临时谈判状态（弹窗流程）
-    conflict: { risk: 0, flags: { disclosed: false, approved: false } },
-    posture: { monitoring: 10, tests: 10, runbooks: 10 },
-    research: { topics: ["ai_audit"], progress: { aiAudit: 0 }, internalAdoption: { aiAudit: 0 }, published: { aiAudit: 0 } },
-    majorIncident: null,
-    world: {
-      majorIncidentCooldown: 0,
-      eventPityWeeks: 0,
-      // X 舆情热度：吹逼/爆火/翻车后会上升，后续更容易触发相关事件；每周会自然衰减
-      xHeat: 0, // 0~100
-      xLastOutcome: null, // 'ok'|'viral'|'fail'|null
-      xLastPostTotalWeek: null, // number|null
-      // X 打脸剧情链：连续 1~3 周的“被追打/澄清/收尾”
-      xDrama: { stage: null, intensity: 0, topic: "", variant: "quote", weeksLeft: 0 },
+    resources: {
+      cash: 1000000,
+      reputation: 10,
+      community: 8,
+      techPoints: 12,
+      network: 10,
+      securityRisk: 8,
+      complianceRisk: 6,
+      fans: 0,
     },
+    market: {
+      projects: [],
+      hires: [],
+    },
+    active: {
+      // in-development projects
+      projects: [],
+      // live products
+      products: [],
+    },
+    team: {
+      members: [
+        {
+          id: "m_you",
+          name: "你",
+          role: "founder",
+          salaryWeekly: 0,
+          skills: {
+            product: 55,
+            design: 35,
+            protocol: 55,
+            contract: 55,
+            infra: 40,
+            security: 45,
+            growth: 35,
+            compliance: 20,
+          },
+        },
+      ],
+    },
+    selectedTarget: null,
+    stageQueue: [],
+    log: [],
     inbox: {
       // 每周刷新的“可选事件列表”：用户可以点开看、处理或忽略；不处理也不会卡住流程
       // items: { id, def, created:{year,week}, expiresInWeeks, payload? }
@@ -92,32 +71,36 @@ export function defaultState() {
       tutorialShown: false,
       startFilled: false,
       gameOver: null,
+      // crisis cooldowns (avoid chain-trigger modals)
+      securityCrisisNextAtDay: 0,
     },
-    progress: {
-      noOrderWeeks: 0,
-      totalWeeks: 0,
-      earnedTotal: 0, // 累计“进账”（不含生活费/租房等支出）
-      findingsTotal: 0, // 累计发现的 findings 数量
+    progress: { totalWeeks: 0, earnedTotal: 0 },
+    history: {
+      // 已研发/交付的项目（含二次开发）
+      projectsDone: [],
     },
-    leaderboards: {
-      // 每周会滚动更新的“同行榜”
-      playerPrev: { earnedTotal: 0, findingsTotal: 0 },
-      playerWeek: { earnedWeek: 0, findingsWeek: 0 },
-      npcs: [
-        { name: "bradmoon", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
-        { name: "ret2basic", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
-        { name: "pashov", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
-        { name: "sahuang", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
-        { name: "polaris", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
-        { name: "jesjupyter", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
-        { name: "icebear", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
-        { name: "sunsec", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
-        { name: "0x52", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
-        { name: "simiao", earnedTotal: 0, findingsTotal: 0, earnedWeek: 0, findingsWeek: 0 },
-      ],
+    engine: {
+      dev: { version: 1, slots: 1, modules: [] },
+      sec: { version: 1, slots: 1, modules: [] },
+      infra: { version: 1, slots: 1, modules: [] },
+      eco: { version: 1, slots: 1, modules: [] },
     },
-    shop: {
-      owned: {}, // { [itemKey]: number }
+    research: {
+      unlocked: [],
+      task: null, // { kind?, nodeId?, engineKey, targetVersion, hoursTotal, hoursDone, assigneeId, costTech? }
+    },
+    ops: {
+      // 全局默认运营策略（可按产品覆盖/继承）
+      buybackPct: 0.0, // 0~0.5
+      emissions: 0.0, // 0~1
+      incentivesBudgetWeekly: 0, // ¥
+    },
+    ui: {
+      ratingQueue: [],
+    },
+    knowledge: {
+      // “泽娜”提供的已知搭配：按 archetype 解锁（需要在科研里做复盘任务）
+      zenaKnownArchetypes: [],
     },
   };
   return s;
@@ -125,144 +108,103 @@ export function defaultState() {
 
 /** 老存档兼容：补齐字段 + clamp */
 export function normalizeState(state) {
-  if (!state.settings) state.settings = { lang: "en" };
-  if (state.settings.lang !== "zh") state.settings.lang = "en";
-  if (typeof state.settings.healthCap !== "number") state.settings.healthCap = 150;
-  state.settings.healthCap = clamp(Math.round(state.settings.healthCap), 120, 260);
+  if (!state || typeof state !== "object") state = defaultState();
+  if (!state.settings) state.settings = {};
   if (typeof state.settings.seasonWeeks !== "number") state.settings.seasonWeeks = 52;
   // 只允许 UI 提供的档位（避免旧存档/手改导致奇怪体验）
   const sw = clamp(Math.round(state.settings.seasonWeeks), 8, 5200);
   state.settings.seasonWeeks = [12, 24, 36, 52].includes(sw) ? sw : 52;
 
-  // 默认 profile：仅对“默认名字/称号”做语言映射，避免英文界面残留中文
-  if (!state.player) state.player = { name: "马某某·审计师", title: "自由审计师（从零开荒）" };
-  if (state.settings.lang === "en") {
-    if (state.player.name === "马某某·审计师") state.player.name = "Alex Auditor";
-    if (state.player.title === "自由审计师（从零开荒）") state.player.title = "Independent Security Practitioner";
-  } else {
-    if (state.player.name === "Alex Auditor") state.player.name = "马某某·审计师";
-    if (state.player.title === "Independent Security Practitioner") state.player.title = "自由审计师（从零开荒）";
-  }
-  if (!state.settings.auto) {
-    state.settings.auto = {
-      enabled: false,
-      focus: "balanced",
-      allowQuitJob: false,
-      allowAcceptJob: false,
-      autoEndWeek: true,
-      stepMs: 2000,
-      minStaminaPct: 35,
-      minMoodPct: 30,
-    };
-  }
-  if (typeof state.settings.auto.enabled !== "boolean") state.settings.auto.enabled = false;
-  if (!["balanced", "direct", "platform", "company", "incident", "research", "survival"].includes(state.settings.auto.focus))
-    state.settings.auto.focus = "balanced";
-  if (typeof state.settings.auto.allowQuitJob !== "boolean") state.settings.auto.allowQuitJob = false;
-  if (typeof state.settings.auto.allowAcceptJob !== "boolean") state.settings.auto.allowAcceptJob = false;
-  if (typeof state.settings.auto.autoEndWeek !== "boolean") state.settings.auto.autoEndWeek = true;
-  if (typeof state.settings.auto.stepMs !== "number") state.settings.auto.stepMs = 2000;
-  state.settings.auto.stepMs = clamp(Math.round(state.settings.auto.stepMs), 500, 5000);
-  if (typeof state.settings.auto.minStaminaPct !== "number") state.settings.auto.minStaminaPct = 35;
-  if (typeof state.settings.auto.minMoodPct !== "number") state.settings.auto.minMoodPct = 30;
-  state.settings.auto.minStaminaPct = clamp(Math.round(state.settings.auto.minStaminaPct), 5, 90);
-  state.settings.auto.minMoodPct = clamp(Math.round(state.settings.auto.minMoodPct), 5, 90);
+  // layout settings (resizable panels)
+  if (!state.settings.layout || typeof state.settings.layout !== "object") state.settings.layout = { colLeft: 420 };
+  if (typeof state.settings.layout.colLeft !== "number") state.settings.layout.colLeft = 420;
+  state.settings.layout.colLeft = clamp(Math.round(state.settings.layout.colLeft), 260, 560);
 
-  if (!state.schedule) state.schedule = { hoursPerDay: 8, locked: false };
-  if (typeof state.schedule.hoursPerDay !== "number") state.schedule.hoursPerDay = 8;
-  state.schedule.hoursPerDay = clamp(Math.round(state.schedule.hoursPerDay), 6, 24);
-  if (typeof state.schedule.locked !== "boolean") state.schedule.locked = false;
-
-  if (!state.flags) state.flags = { tutorialShown: false, startFilled: false, gameOver: null };
+  if (!state.player) state.player = { name: "马某某·Builder", title: "Web3 项目开发大亨（从零开荒）" };
+  if (!state.flags) state.flags = { tutorialShown: false, startFilled: false, gameOver: null, securityCrisisNextAtDay: 0 };
+  if (!state.time) state.time = { paused: true, speed: 1, elapsedHours: 0, lastTs: 0, resumeAfterStageModal: false };
+  if (typeof state.time.paused !== "boolean") state.time.paused = true;
+  if (typeof state.time.speed !== "number") state.time.speed = 1;
+  if (typeof state.time.elapsedHours !== "number") state.time.elapsedHours = 0;
+  if (typeof state.time.lastTs !== "number") state.time.lastTs = 0;
+  if (typeof state.time.resumeAfterStageModal !== "boolean") state.time.resumeAfterStageModal = false;
+  // 允许更快的时间档位（UI 提供到 x8）
+  state.time.speed = clamp(state.time.speed, 0.5, 8);
+  state.time.elapsedHours = clamp(state.time.elapsedHours, 0, 9999999);
   if (typeof state.flags.startFilled !== "boolean") state.flags.startFilled = false;
+  if (typeof state.flags.securityCrisisNextAtDay !== "number") state.flags.securityCrisisNextAtDay = 0;
+  state.flags.securityCrisisNextAtDay = clamp(Math.round(state.flags.securityCrisisNextAtDay), 0, 9999999);
 
-  if (!state.x) state.x = { feed: [] };
-  if (!Array.isArray(state.x.feed)) state.x.feed = [];
+  if (!Array.isArray(state.stageQueue)) state.stageQueue = [];
+  state.stageQueue = state.stageQueue
+    .filter((x) => x && typeof x.kind === "string" && typeof x.id === "string")
+    .slice(0, 30);
 
-  // brand
-  if (!state.stats) state.stats = {};
-  if (typeof state.stats.brand !== "number") state.stats.brand = 0;
+  if (!state.now) state.now = { year: 2017, week: 1, day: 1 };
+  if (typeof state.now.year !== "number") state.now.year = 2017;
+  if (typeof state.now.week !== "number") state.now.week = 1;
+  if (typeof state.now.day !== "number") state.now.day = 1;
+  state.now.week = clamp(Math.round(state.now.week), 1, 52);
+  state.now.day = clamp(Math.round(state.now.day), 1, 7);
+  if (typeof state.now.dateISO !== "string") state.now.dateISO = "2017-01-01";
 
-  // market / active 扩展
-  if (!state.market) state.market = { direct: [], platform: [], jobs: [] };
-  if (!Array.isArray(state.market.direct)) state.market.direct = [];
-  if (!Array.isArray(state.market.platform)) state.market.platform = [];
-  if (!Array.isArray(state.market.jobs)) state.market.jobs = [];
+  if (!state.company) state.company = { name: "独立 Builder 工作室", level: 1 };
+  if (typeof state.company.name !== "string") state.company.name = "独立 Builder 工作室";
+  if (typeof state.company.level !== "number") state.company.level = 1;
+  state.company.level = clamp(Math.round(state.company.level), 1, 10);
 
-  if (!state.active) state.active = { direct: [], platform: [], company: [] };
-  if (!Array.isArray(state.active.direct)) state.active.direct = [];
-  if (!Array.isArray(state.active.platform)) state.active.platform = [];
-  if (!Array.isArray(state.active.company)) state.active.company = [];
+  if (!state.resources) {
+    state.resources = { cash: 1000000, reputation: 10, community: 8, techPoints: 12, network: 10, securityRisk: 8, complianceRisk: 6, fans: 0 };
+  }
+  const r = state.resources;
+  for (const k of ["cash", "reputation", "community", "techPoints", "network", "securityRisk", "complianceRisk", "fans"]) {
+    if (typeof r[k] !== "number") r[k] = 0;
+  }
+  r.cash = clamp(Math.round(r.cash), -999999999, 999999999);
+  r.reputation = clamp(Math.round(r.reputation), 0, 100);
+  r.community = clamp(Math.round(r.community), 0, 100);
+  r.techPoints = clamp(Math.round(r.techPoints), 0, 999999);
+  r.network = clamp(Math.round(r.network), 0, 100);
+  r.securityRisk = clamp(Math.round(r.securityRisk), 0, 100);
+  r.complianceRisk = clamp(Math.round(r.complianceRisk), 0, 100);
+  r.fans = clamp(Math.round(r.fans), 0, 999999999);
 
-  // 兼容旧存档：market/jobs 里可能还残留旧 companyKey
-  if (Array.isArray(state.market?.jobs)) {
-    const legacyYubitKey = ["bl", "ock", "sec"].join("");
-    for (const j of state.market.jobs) {
-      if (!j) continue;
-      if (String(j.companyKey || "") === legacyYubitKey) j.companyKey = "yubit";
-      if (typeof j.companyName === "string" && new RegExp(legacyYubitKey, "i").test(j.companyName)) j.companyName = "Yubit";
-    }
+  if (!state.market) state.market = { projects: [], hires: [] };
+  if (!Array.isArray(state.market.projects)) state.market.projects = [];
+  if (!Array.isArray(state.market.hires)) state.market.hires = [];
+
+  if (!state.active) state.active = { projects: [], products: [] };
+  if (!Array.isArray(state.active.projects)) state.active.projects = [];
+  if (!Array.isArray(state.active.products)) state.active.products = [];
+
+  if (!state.team) state.team = defaultState().team;
+  if (!Array.isArray(state.team.members)) state.team.members = defaultState().team.members;
+  // ensure perks exist for old saves
+  for (const m of state.team.members) {
+    if (!m || typeof m !== "object") continue;
+    if (!("perk" in m)) m.perk = null;
   }
 
-  // employment/conflict/posture/research/world
-  if (!state.employment) {
-    state.employment = {
-      employed: false,
-      companyKey: null,
-      companyName: null,
-      companyType: null,
-      workMode: "remote",
-      level: 1,
-      salaryWeekly: 0,
-      weeksEmployed: 0,
-      yhToxicTriggered: false,
-      promoProgress: 0,
-      performance: 50,
-      trust: 50,
-      politics: 20,
-      manager: { archetype: "normal", toxicity: 15 },
-      vanityKpi: { mode: "none", intensity: 0 },
-    };
-  }
-  if (!("workMode" in state.employment)) {
-    const ck = String(state.employment.companyKey || "");
-    state.employment.workMode = ["yubit", "yh", "binance", "certik"].includes(ck) ? "onsite" : "remote";
-  }
-  // 兼容旧存档：以前公司显示名可能写死为旧名
-  const legacyYubitKey = ["bl", "ock", "sec"].join("");
-  const ck0 = String(state.employment.companyKey || "");
-  if (ck0 === legacyYubitKey) state.employment.companyKey = "yubit";
-  if (String(state.employment.companyKey || "") === "yubit") state.employment.companyName = "Yubit";
-  if (state.employment.workMode !== "onsite") state.employment.workMode = "remote";
-  if (typeof state.employment.weeksEmployed !== "number") state.employment.weeksEmployed = 0;
-  state.employment.weeksEmployed = clamp(Math.round(state.employment.weeksEmployed), 0, 5200);
-  if (typeof state.employment.yhToxicTriggered !== "boolean") state.employment.yhToxicTriggered = false;
-  if (typeof state.employment.promoProgress !== "number") state.employment.promoProgress = 0;
-  state.employment.promoProgress = clamp(+state.employment.promoProgress, 0, 999);
-  if (!state.conflict) state.conflict = { risk: 0, flags: { disclosed: false, approved: false } };
-  if (!state.posture) state.posture = { monitoring: 10, tests: 10, runbooks: 10 };
-  if (!state.research) state.research = { topics: ["ai_audit"], progress: { aiAudit: 0 }, internalAdoption: { aiAudit: 0 }, published: { aiAudit: 0 } };
-  if (!state.world) state.world = { majorIncidentCooldown: 0 };
-  if (typeof state.world.majorIncidentCooldown !== "number") state.world.majorIncidentCooldown = 0;
-  if (typeof state.world.eventPityWeeks !== "number") state.world.eventPityWeeks = 0;
-  state.world.eventPityWeeks = clamp(Math.round(state.world.eventPityWeeks), 0, 99);
-  if (typeof state.world.xHeat !== "number") state.world.xHeat = 0;
-  state.world.xHeat = clamp(Math.round(state.world.xHeat), 0, 100);
-  if (!["flop", "ok", "pop", "viral", "fail", "meltdown"].includes(String(state.world.xLastOutcome))) {
-    state.world.xLastOutcome = null;
-  }
-  if (typeof state.world.xLastPostTotalWeek !== "number") state.world.xLastPostTotalWeek = null;
-  if (typeof state.world.xLastPostTotalWeek === "number") {
-    state.world.xLastPostTotalWeek = clamp(Math.round(state.world.xLastPostTotalWeek), 0, 999999);
-  }
-  if (!state.world.xDrama) state.world.xDrama = { stage: null, intensity: 0, topic: "", variant: "quote", weeksLeft: 0 };
-  if (!["spark", "callout", "aftermath", null].includes(state.world.xDrama.stage)) state.world.xDrama.stage = null;
-  if (typeof state.world.xDrama.intensity !== "number") state.world.xDrama.intensity = 0;
-  state.world.xDrama.intensity = clamp(Math.round(state.world.xDrama.intensity), 0, 100);
-  if (typeof state.world.xDrama.topic !== "string") state.world.xDrama.topic = "";
-  if (!["quote", "shill", "old"].includes(String(state.world.xDrama.variant))) state.world.xDrama.variant = "quote";
-  if (typeof state.world.xDrama.weeksLeft !== "number") state.world.xDrama.weeksLeft = 0;
-  state.world.xDrama.weeksLeft = clamp(Math.round(state.world.xDrama.weeksLeft), 0, 8);
+  if (!state.engine) state.engine = defaultState().engine;
+  if (!state.research) state.research = { unlocked: [] };
+  if (!Array.isArray(state.research.unlocked)) state.research.unlocked = [];
+  if (!("task" in state.research)) state.research.task = null;
+  if (state.research.task && typeof state.research.task !== "object") state.research.task = null;
+  if (!state.ops) state.ops = defaultState().ops;
+
+  // ui queues (modal queue, etc.)
+  if (!state.ui || typeof state.ui !== "object") state.ui = { ratingQueue: [] };
+  if (!Array.isArray(state.ui.ratingQueue)) state.ui.ratingQueue = [];
+  state.ui.ratingQueue = state.ui.ratingQueue
+    .filter((x) => x && typeof x === "object")
+    .slice(0, 30);
+
+  if (!state.knowledge || typeof state.knowledge !== "object") state.knowledge = { zenaKnownArchetypes: [] };
+  if (!Array.isArray(state.knowledge.zenaKnownArchetypes)) state.knowledge.zenaKnownArchetypes = [];
+  state.knowledge.zenaKnownArchetypes = state.knowledge.zenaKnownArchetypes
+    .map((x) => String(x || ""))
+    .filter(Boolean)
+    .slice(0, 30);
 
   // inbox（可选事件列表）
   if (!state.inbox) state.inbox = { items: [] };
@@ -286,82 +228,27 @@ export function normalizeState(state) {
   if (!state.shop.owned || typeof state.shop.owned !== "object") state.shop.owned = {};
 
   // progress / leaderboards
-  if (!state.progress) state.progress = { noOrderWeeks: 0, totalWeeks: 0, earnedTotal: 0, findingsTotal: 0 };
-  if (typeof state.progress.noOrderWeeks !== "number") state.progress.noOrderWeeks = 0;
+  if (!state.progress) state.progress = { totalWeeks: 0, earnedTotal: 0 };
   if (typeof state.progress.totalWeeks !== "number") state.progress.totalWeeks = 0;
   if (typeof state.progress.earnedTotal !== "number") state.progress.earnedTotal = 0;
-  if (typeof state.progress.findingsTotal !== "number") state.progress.findingsTotal = 0;
   state.progress.earnedTotal = clamp(Math.round(state.progress.earnedTotal), 0, 999999999);
-  state.progress.findingsTotal = clamp(Math.round(state.progress.findingsTotal), 0, 999999999);
 
-  if (!state.leaderboards) state.leaderboards = defaultState().leaderboards;
-  if (!state.leaderboards.playerPrev) state.leaderboards.playerPrev = { earnedTotal: 0, findingsTotal: 0 };
-  if (!state.leaderboards.playerWeek) state.leaderboards.playerWeek = { earnedWeek: 0, findingsWeek: 0 };
-  if (typeof state.leaderboards.playerPrev.earnedTotal !== "number") state.leaderboards.playerPrev.earnedTotal = 0;
-  if (typeof state.leaderboards.playerPrev.findingsTotal !== "number") state.leaderboards.playerPrev.findingsTotal = 0;
-  if (typeof state.leaderboards.playerWeek.earnedWeek !== "number") state.leaderboards.playerWeek.earnedWeek = 0;
-  if (typeof state.leaderboards.playerWeek.findingsWeek !== "number") state.leaderboards.playerWeek.findingsWeek = 0;
-  if (!Array.isArray(state.leaderboards.npcs) || state.leaderboards.npcs.length === 0) {
-    state.leaderboards.npcs = defaultState().leaderboards.npcs;
-  } else {
-    // 补齐字段
-    for (const n of state.leaderboards.npcs) {
-      if (!n) continue;
-      if (typeof n.name !== "string") n.name = "anon";
-      // 兼容旧存档：NPC 名称修正（避免源码中出现旧字面量）
-      const legacyJ = ["jes", "16", "jupiter"].join("");
-      if (n.name === legacyJ) n.name = "jesjupyter";
-      if (typeof n.earnedTotal !== "number") n.earnedTotal = 0;
-      if (typeof n.findingsTotal !== "number") n.findingsTotal = 0;
-      if (typeof n.earnedWeek !== "number") n.earnedWeek = 0;
-      if (typeof n.findingsWeek !== "number") n.findingsWeek = 0;
-      n.earnedTotal = clamp(Math.round(n.earnedTotal), 0, 999999999);
-      n.findingsTotal = clamp(Math.round(n.findingsTotal), 0, 999999999);
-    }
-  }
-
-  if (!("negotiation" in state)) state.negotiation = null;
-
-  // 关键：加载旧存档后也要按当前语言重贴标签（直客/平台/offer/company），否则会残留旧中文
-  setLang(state, state.settings.lang);
-
-  // 兼容旧存档：重大事件标题以前可能写死中文；这里按当前语言重新贴标题
-  if (state.majorIncident?.active && typeof state.majorIncident.kind === "string") {
-    state.majorIncident.title = t(state, `major.title.${state.majorIncident.kind}`);
-  }
+  if (!state.history || typeof state.history !== "object") state.history = { projectsDone: [] };
+  if (!Array.isArray(state.history.projectsDone)) state.history.projectsDone = [];
+  state.history.projectsDone = state.history.projectsDone
+    .filter((x) => x && typeof x === "object")
+    .slice(0, 200);
 
   return state;
 }
 
-export function computeWeeklyAPMax(state) {
-  const { stamina, mood } = state.stats;
-  const h = clamp(Math.round(state.schedule?.hoursPerDay ?? 8), 6, 24);
-  const cap = healthCap(state);
-  // 行动点更贴近“现实可干很多事”
-  // 8h/天 ≈ 7AP；12h/天 ≈ 11AP；22h/天 ≈ 19AP；24h/天 ≈ 21AP
-  const base = clamp(Math.round((h / 8) * 7), 6, 22);
-  const bonus = (stamina >= cap * 0.75 ? 1 : 0) + (mood >= cap * 0.75 ? 1 : 0);
-  const penalty = (stamina <= cap * 0.25 ? 1 : 0) + (mood <= cap * 0.25 ? 1 : 0);
-  return clamp(base + bonus - penalty, 4, 24);
-}
-
-export function refreshAP(state) {
-  state.ap.max = computeWeeklyAPMax(state);
-  state.ap.now = clamp(state.ap.now, 0, state.ap.max);
-}
-
-export function spendAP(state, n) {
-  if (state.ap.now < n) return false;
-  state.ap.now -= n;
-  return true;
-}
-
-export function gainAP(state, n) {
-  state.ap.now = clamp(state.ap.now + n, 0, state.ap.max);
-}
-
 export function weekLabel(state) {
-  return t(state, "ui.time.weekLabel", { year: state.now.year, week: state.now.week });
+  const y = state?.now?.year ?? 0;
+  const w = state?.now?.week ?? 0;
+  const d = state?.now?.day ?? 0;
+  const dayPart = typeof d === "number" && d > 0 ? ` · 第 ${d} 天` : "";
+  const iso = state?.now?.dateISO ? ` · ${state.now.dateISO}` : "";
+  return `第 ${y} 年 · 第 ${w} 周${dayPart}${iso}`;
 }
 
 export function log(state, text, tone = "info") {
@@ -374,23 +261,23 @@ export function log(state, text, tone = "info") {
   state.log = state.log.slice(0, 120);
 }
 
-// delta: { stamina, mood, cash, reputation, compliance, network, platformRating, skill, tooling, writing, comms }
 export function adjustAfterAction(state, delta) {
   const keys = Object.keys(delta);
   for (const k of keys) {
-    const max = statCap(state, k);
-    state.stats[k] = clamp(state.stats[k] + delta[k], 0, max);
+    if (!state.resources) continue;
+    if (!(k in state.resources)) continue;
+    const max = resourceCap(k);
+    state.resources[k] = clamp(state.resources[k] + delta[k], 0, max);
   }
-  refreshAP(state);
 }
 
-export function healthCap(state) {
-  return clamp(Math.round(state?.settings?.healthCap ?? 150), 120, 260);
-}
-
-export function statCap(state, key) {
+export function resourceCap(key) {
   if (key === "cash") return 999999999;
-  if (key === "stamina" || key === "mood") return healthCap(state);
+  if (key === "techPoints") return 999999;
   return 100;
+}
+
+export function clampPct(n) {
+  return clamp(Math.round(n), 0, 100);
 }
 

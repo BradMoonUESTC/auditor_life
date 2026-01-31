@@ -1,440 +1,506 @@
-// cache-bust: 避免浏览器强缓存旧模块导致“按钮没反应/文案不更新”
 import { clamp, escapeHtml } from "./utils.js?v=57";
 import { load, resetStorage, save } from "./storage.js?v=57";
-import { adjustAfterAction, defaultState, healthCap, log, normalizeState, refreshAP, weekLabel } from "./state.js?v=57";
-import {
-  acceptJob,
-  actionCost,
-  activateDirect,
-  activatePlatform,
-  buyItem,
-  careerAdvanceWeek,
-  doAction,
-  ensureCompanyTickets,
-  findTarget,
-  migrateCompensation,
-  quitJob,
-  requestRemoteWork,
-  seedMarket,
-  settleProjects,
-  tickLeaderboards,
-  useItem,
-} from "./logic.js?v=57";
-import { rollEvents, inboxDefs, seedEventInbox } from "./events.js?v=57";
+import { defaultState, log, normalizeState, weekLabel } from "./state.js?v=57";
 import { closeModal, openModal, toast } from "./modal.js?v=57";
-import { bind, initResizableLayout, render, switchTab } from "./ui.js?v=57";
-import { addXPosts } from "./xfeed.js?v=57";
-import { setLang, t } from "./i18n.js?v=57";
-import { pickAutoStep } from "./auto.js?v=57";
-import { applyNegotiationMove, negotiationBody, negotiationMoves, startDirectNegotiation } from "./negotiation.js?v=57";
-import { FEEDBACK_FORM_EMBED_URL } from "./content.js?v=57";
-
-function isFreshStart(state) {
-  return (
-    state.now?.year === 1 &&
-    state.now?.week === 1 &&
-    (state.progress?.totalWeeks ?? 0) === 0 &&
-    (state.active?.direct?.length ?? 0) === 0 &&
-    (state.active?.platform?.length ?? 0) === 0
-  );
-}
+import { bind, render, switchTab } from "./ui.js?v=57";
+import { ARCHETYPES, AUDIENCES, CHAINS, KNOWN_MATCH_TABLE, MATCH_LEVEL, NARRATIVES, PLATFORMS, RESEARCH_TREE, STAGE_DIMS, abandonProject, applyInboxChoice, autoAssignProjectStageTeam, createProject, ensureSelection, exploreCandidates, findTarget, hire, knownComboBreakdown, projectStage, seedMarket, setProjectTeam, setResearchAssignee, startProject, startResearch, startResearchNode, tickDay, tickProjects, tickResearch, tickWeek, upgradeOptionsForProduct } from "./logic.js?v=57";
 
 function initNewState() {
   const s = normalizeState(defaultState());
   seedMarket(s, true);
-  log(s, t(s, "log.welcome"));
-  addXPosts(s, 4);
-  refreshAP(s);
-  s.ap.now = s.ap.max;
-  s.flags.startFilled = true;
+  log(s, "欢迎来到 Web3 项目开发大亨：做项目、攒技术、造引擎、上线产品、跑指标。", "good");
   return s;
 }
 
-function openNewGameModal(state, onStart) {
-  const currentName = String(state?.player?.name || "");
+function isZenaKnown(state, archetype) {
+  const k = String(archetype || "");
+  return Boolean(k && Array.isArray(state.knowledge?.zenaKnownArchetypes) && state.knowledge.zenaKnownArchetypes.includes(k));
+}
+
+function openDeliveryRatingModal(state, entry) {
+  const title = String(entry?.title || "开发评分");
+  const ratings = Array.isArray(entry?.ratings) ? entry.ratings.slice(0, 3) : [];
+  const archetype = String(entry?.archetype || "");
+  const combo = isZenaKnown(state, archetype) ? (entry?.combo || null) : null;
+  const match = clamp(Math.round(entry?.match || 0), 0, 100);
+  const qualityLine = isZenaKnown(state, archetype) ? `质量 ${Math.round(1 + (match / 100) * 9)}/10` : "质量 未知（需复盘）";
+
+  const timers = [];
+  const cleanup = () => {
+    while (timers.length) clearInterval(timers.pop());
+  };
+
+  const rows = ratings
+    .map((r, i) => {
+      const idx = i + 1;
+      return `
+        <div class="rateRow" id="rateRow${idx}">
+          <div class="rateRow__name">${escapeHtml(r.name || `机构 ${idx}`)}</div>
+          <div class="rateRow__score"><span class="rateRoll" id="rateRoll${idx}">—</span><span class="rateUnit">/10</span></div>
+        </div>
+      `;
+    })
+    .join("");
+
   openModal({
-    title: t(state, "modal.new.title"),
+    title: "开发完成 · 评分",
+    wide: true,
     body: `
-      <div>${escapeHtml(t(state, "modal.new.body"))}</div>
-      <div style="margin-top:12px;">
-        <div class="muted" style="margin-bottom:6px;">${escapeHtml(t(state, "ui.newGame.name.label"))}</div>
-        <input id="newPlayerName" class="input" type="text" value="${escapeHtml(currentName)}" placeholder="${escapeHtml(t(state, "ui.newGame.name.placeholder"))}" />
-        <div class="muted" style="margin-top:6px;">${escapeHtml(t(state, "ui.newGame.name.hint"))}</div>
+      <div class="muted">${escapeHtml(title)}（${escapeHtml(qualityLine)}）</div>
+      ${combo ? `
+        <div class="item" style="margin-top:12px;">
+          <div class="item__top">
+            <div class="item__title">已知搭配匹配</div>
+          </div>
+          <div class="item__body">
+            <div class="chips" style="display:flex;gap:10px;flex-wrap:wrap;">
+              <span class="chip chip--${escapeHtml(combo.narrative.tone)}">叙事：${escapeHtml(combo.narrative.label)}</span>
+              <span class="chip chip--${escapeHtml(combo.chain.tone)}">链：${escapeHtml(combo.chain.label)}</span>
+              <span class="chip chip--${escapeHtml(combo.audience.tone)}">受众：${escapeHtml(combo.audience.label)}</span>
+              <span class="chip">已知搭配得分 ${escapeHtml(String(combo.pct))}%</span>
+            </div>
+          </div>
+        </div>
+      ` : `
+        <div class="item" style="margin-top:12px;">
+          <div class="item__top">
+            <div class="item__title">泽娜的已知搭配</div>
+          </div>
+          <div class="item__body">
+            <div class="muted">未知：需要在科研里做一次“泽娜复盘”，选择一个历史项目/产品，完成后才会告诉你该类型的匹配。</div>
+          </div>
+        </div>
+      `}
+      <div class="rateBoard" style="margin-top:12px;">
+        ${rows}
       </div>
+      <div class="muted" style="margin-top:12px;">提示：评分依次公布，数字会先随机跳动再落到最终分数。</div>
     `,
     actions: [
-      { label: t(state, "modal.common.cancel"), onClick: closeModal },
       {
-        label: t(state, "modal.new.confirm"),
+        label: "关闭",
         kind: "primary",
         onClick: () => {
-          const raw = /** @type {HTMLInputElement|null} */ (document.getElementById("newPlayerName"))?.value || "";
-          const name = raw.trim();
+          cleanup();
           closeModal();
-          onStart?.(name);
         },
       },
     ],
   });
-}
 
-function openDirectNegotiation(state, order, onDone) {
-  // 自动化模式：不进谈判，避免卡弹窗
-  if (state.settings?.auto?.enabled) {
-    const r = activateDirect(state, order);
-    if (!r.ok) toast(state, r.msg);
-    onDone?.();
-    return;
-  }
-
-  if (!state.negotiation || state.negotiation.kind !== "direct" || state.negotiation.orderId !== order.id) {
-    state.negotiation = startDirectNegotiation(state, order);
-    log(state, t(state, "log.nego.start", { title: order.title }));
-    save(state);
-  }
-
-  const nego = state.negotiation;
-  openModal({
-    title: t(state, "ui.nego.title"),
-    body: negotiationBody(state, nego),
-    actions: negotiationMoves(state, nego).map((m) => ({
-      label: m.label,
-      kind: m.kind,
-      onClick: () => {
-        const res = applyNegotiationMove(state, nego, m.key);
-        if (res.done) {
-          closeModal();
-
-          if (res.outcome === "cancel") {
-            log(state, t(state, "log.nego.cancel", { title: order.title }), "warn");
-            state.negotiation = null;
-            save(state);
-            onDone?.();
-            return;
-          }
-
-          if (res.outcome === "fail") {
-            log(state, t(state, "log.nego.fail", { title: order.title, reason: res.reason || "" }), "bad");
-            state.stats.mood = Math.max(0, (state.stats.mood || 0) - 2);
-            state.negotiation = null;
-            save(state);
-            onDone?.();
-            return;
-          }
-
-          if (res.outcome === "sign") {
-            const negotiated = {
-              ...order,
-              fee: nego.terms.fee,
-              deadlineWeeks: nego.terms.deadlineWeeks,
-              scope: nego.terms.scope,
-              depositPct: nego.terms.depositPct,
-            };
-            const r = activateDirect(state, negotiated);
-            if (!r.ok) {
-              // 没接成（比如直客上限）：不要写“达成签约”的成功日志
-              toast(state, r.msg);
-              state.negotiation = null;
-              save(state);
-              onDone?.();
-              return;
-            }
-            log(
-              state,
-              t(state, "log.nego.success", {
-                title: order.title,
-                fee: `¥${Math.round(nego.terms.fee).toLocaleString(state.settings?.lang === "en" ? "en-US" : "zh-CN")}`,
-                weeks: nego.terms.deadlineWeeks,
-                depositPct: `${Math.round(nego.terms.depositPct * 100)}%`,
-              }),
-              "good"
-            );
-            state.negotiation = null;
-            save(state);
-            onDone?.();
-            return;
-          }
-        }
-
-        // 未结束：刷新弹窗
-        save(state);
-        openDirectNegotiation(state, order, onDone);
-      },
-    })),
-  });
-}
-
-function advanceWeek(state) {
-  const h = clamp(Math.round(state.schedule?.hoursPerDay ?? 8), 6, 24);
-  const cap = healthCap(state);
-  const livingCost = 700;
-
-  // X 舆情热度：每周自然衰减（避免永久被舆情锁死）
-  if (!state.world) state.world = { majorIncidentCooldown: 0, eventPityWeeks: 0, xHeat: 0, xLastOutcome: null, xLastPostTotalWeek: null };
-  const heat = clamp(Math.round(state.world.xHeat ?? 0), 0, 100);
-  const decay = heat >= 70 ? 22 : heat >= 40 ? 16 : 10;
-  state.world.xHeat = clamp(heat - decay, 0, 100);
-
-  state.now.week += 1;
-  if (state.now.week > 52) {
-    state.now.week = 1;
-    state.now.year += 1;
-    log(state, t(state, "log.week.newYear"), "good");
-  }
-
-  // 每周刷新市场：直客/平台/职业 offer 都重刷一轮
-  seedMarket(state, true);
-  // 氛围向：每周刷几条 X 梗
-  addXPosts(state);
-  // 每周刷一批“可选事件列表”
-  seedEventInbox(state);
-  // 职业/公司/重大事件推进（工资、tickets、job offers、重大事件 tick）
-  careerAdvanceWeek(state);
-
-  // 每周固定生活成本：现金持续被“现实”抽干
-  state.stats.cash -= livingCost;
-  log(state, t(state, "log.week.livingCost", { amount: `¥${livingCost.toLocaleString(state.settings?.lang === "en" ? "en-US" : "zh-CN")}` }), "warn");
-
-  // 每周自然恢复 + 工时代价/恢复
-  // 血厚一点：基础恢复更强（且 cap 更高），避免“轻易嘎”
-  adjustAfterAction(state, { stamina: Math.round(cap * 0.04), mood: Math.round(cap * 0.03) }); // 150 cap: +6/+5
-  if (h > 8) {
-    const t = h - 8;
-    // 非线性损耗：越接近“不睡觉”，代价越夸张；但不做成“24h 一周必死”
-    // 经验目标：24h 极其危险（本周不休息会很快见底），但如果本周大量休息/下周躺平，仍可苟住
-    // 调得更像“能扛但会折寿”：整体放缓系数
-    let sta = Math.round(t * 0.9 + (t * t) / 14);
-    let md = Math.round(t * 0.5 + (t * t) / 24);
-    // 22~24h 额外伤害递增，但幅度收敛（避免秒杀）
-    if (h >= 22) {
-      const x = h - 22; // 22->0, 24->2
-      sta += Math.round(x * 2.0); // 24 额外 +4（仍明显更伤）
-      md += Math.round(x * 1.2); // 24 额外 +2~3
-    }
-    adjustAfterAction(state, { stamina: -sta, mood: -md });
-  }
-  if (h < 8) adjustAfterAction(state, { stamina: +(8 - h), mood: Math.round((8 - h) / 2) });
-
-  refreshAP(state);
-  state.ap.now = state.ap.max;
-
-  const hasActive = state.active.direct.length > 0 || state.active.platform.length > 0 || (state.active.company?.length || 0) > 0;
-  if (!hasActive) state.progress.noOrderWeeks += 1;
-  else state.progress.noOrderWeeks = 0;
-  state.progress.totalWeeks += 1;
-
-  // 现金压力（按新币值缩放）
-  if (state.stats.cash < livingCost * 2) adjustAfterAction(state, { mood: -2 });
-  if (state.stats.compliance > 70) adjustAfterAction(state, { mood: -2 });
-
-  // 同行榜：每周滚动一次（尽量贴近玩家本周增速）
-  tickLeaderboards(state);
-
-  log(state, t(state, "log.week.enter", { week: weekLabel(state) }));
-}
-
-function triggerEnd(state, kind, title, reason, restart) {
-  state.flags.gameOver = { kind, title, reason };
-  log(state, `【${title}】${reason}`, kind === "win" ? "good" : "bad");
-  openModal({
-    title,
-    body: `<div>${escapeHtml(reason)}</div><div style="margin-top:10px;" class="muted">你可以重置存档重新开始，或关闭弹窗查看时间线。</div>`,
-    actions: [
-      { label: "关闭", onClick: closeModal },
-      { label: "重置并重开", kind: "primary", onClick: restart },
-    ],
-  });
-}
-
-function checkEndings(state, restart) {
-  if (state.flags.gameOver) return;
-  const s = state.stats;
-  const totalWeeks = clamp(Math.round(state.progress?.totalWeeks ?? 0), 0, 999999);
-  const seasonWeeks = clamp(Math.round(state.settings?.seasonWeeks ?? 52), 8, 5200);
-  // 赢家别太早：默认至少 24 周后才允许触发 win（避免 12 周速通）
-  const minWinWeeks = seasonWeeks >= 24 ? 24 : clamp(seasonWeeks - 2, 6, 23);
-
-  if (s.cash < 0) return triggerEnd(state, "lose", "资金链断裂", "现金为负，无法维持开销。", restart);
-  if (s.stamina <= 0) return triggerEnd(state, "lose", "身心崩溃", "精力归零：你连 IDE 都不想打开了。", restart);
-  if (s.mood <= 0) return triggerEnd(state, "lose", "精神崩溃", "心态归零：你选择退网，世界清净。", restart);
-  if (s.compliance >= 100) return triggerEnd(state, "lose", "监管介入", "合规风险爆表：你决定暂时离开这个圈子。", restart);
-  if (s.reputation <= 0 && state.progress.noOrderWeeks >= 8) return triggerEnd(state, "lose", "声望归零", "连续 8 周没有订单，市场把你忘了。", restart);
-
-  // 经济缩放：现金阈值相应降低
-  const win1 = s.reputation >= 90 && s.compliance < 20 && s.cash >= 20000;
-  const win2 = s.platformRating >= 70 && s.reputation >= 60 && s.compliance < 35;
-  if (totalWeeks >= minWinWeeks) {
-    if (win1) return triggerEnd(state, "win", "合伙人结局", "你建立了稳定的品牌与交付体系，成为行业“常青树”。", restart);
-    if (win2) return triggerEnd(state, "win", "平台封神结局", "你在平台赛道冲到前排，名字被写进邀请名单。", restart);
-  }
-}
-
-function playEventsSequentially(state, events, done) {
-  const next = () => {
-    if (!events.length) return done?.();
-    const e = events.shift();
-
-    // 自动化：不弹事件选择窗，直接按默认策略选一个选项继续
-    if (state.settings?.auto?.enabled) {
-      const choices = e.choices(state) || [];
-      const picked = choices.find((c) => c.primary) || choices[0];
-      if (picked) {
-        picked.apply(state);
-        render(state);
-        next();
-        return;
-      }
-      // 没有选项也继续推进，避免卡死
-      next();
+  const animateOne = (idx, finalScore, onDone) => {
+    const row = document.getElementById(`rateRow${idx}`);
+    const el = document.getElementById(`rateRoll${idx}`);
+    if (!row || !el) {
+      onDone?.();
       return;
     }
+    row.classList.add("is-running");
+    const tickMs = 60;
+    const totalMs = 980;
+    const t0 = Date.now();
+    const intId = setInterval(() => {
+      const t = Date.now() - t0;
+      if (t >= totalMs) {
+        clearInterval(intId);
+        // settle
+        el.textContent = String(clamp(Math.round(finalScore || 1), 1, 10));
+        row.classList.remove("is-running");
+        row.classList.add("is-done");
+        onDone?.();
+        return;
+      }
+      el.textContent = String(1 + Math.floor(Math.random() * 10));
+    }, tickMs);
+    timers.push(intId);
+  };
 
-    openModal({
-      title: e.title,
-      body: `<div>${escapeHtml(e.desc(state))}</div>`,
-      actions: e.choices(state).map((c) => ({
-        label: c.label,
-        kind: c.primary ? "primary" : undefined,
-        onClick: () => {
-          closeModal();
-          c.apply(state);
-          render(state);
-          next();
-        },
-      })),
+  const runSeq = (i) => {
+    const r = ratings[i];
+    if (!r) return;
+    animateOne(i + 1, r.score, () => {
+      // small gap before next institution
+      const t = setTimeout(() => runSeq(i + 1), 260);
+      timers.push(t);
     });
   };
-  next();
+  // start after short suspense
+  const t = setTimeout(() => runSeq(0), 380);
+  timers.push(t);
 }
 
-function endWeek(state, restart) {
-  if (state.flags.gameOver) return;
-  settleProjects(state);
+function openKnownMatchTableModal(state) {
+  const labelOf = (list, key) => (list.find((x) => x.key === key) || { name: key }).name;
+  const chipOf = (lvlKey, text) => {
+    const lvl = MATCH_LEVEL?.[String(lvlKey || "")] || MATCH_LEVEL.mid;
+    const tone = lvl?.tone || "warn";
+    return `<span class="chip chip--${escapeHtml(tone)}">${escapeHtml(text)}：${escapeHtml(lvl.label)}</span>`;
+  };
 
-  const events = rollEvents(state);
-  if (events.length) {
-    playEventsSequentially(state, events, () => {
-      advanceWeek(state);
-      checkEndings(state, restart);
-      render(state);
-    });
-    return;
+  const archetypeBlocks = (ARCHETYPES || [])
+    .map((a) => {
+      const known = isZenaKnown(state, a.key);
+      const t = KNOWN_MATCH_TABLE?.[a.key] || { narratives: {}, chains: {}, audiences: {} };
+      const narr = known ? (NARRATIVES || []).map((n) => chipOf(t.narratives?.[n.key] || "mid", labelOf(NARRATIVES, n.key))).join("") : `<div class="muted">未知（需要复盘该类型的历史项目/产品）。</div>`;
+      const ch = known ? (CHAINS || []).map((c) => chipOf(t.chains?.[c.key] || "mid", labelOf(CHAINS, c.key))).join("") : "";
+      const aud = known ? (AUDIENCES || []).map((u) => chipOf(t.audiences?.[u.key] || "mid", labelOf(AUDIENCES, u.key))).join("") : "";
+      return `
+        <div class="item">
+          <div class="item__top">
+            <div class="item__title">${escapeHtml(labelOf(ARCHETYPES, a.key))}</div>
+          </div>
+          <div class="item__body">
+            <div class="subhead">叙事</div>
+            <div class="chips" style="display:flex;gap:8px;flex-wrap:wrap;">${narr}</div>
+            ${known ? `
+              <div class="divider"></div>
+              <div class="subhead">链/生态</div>
+              <div class="chips" style="display:flex;gap:8px;flex-wrap:wrap;">${ch}</div>
+              <div class="divider"></div>
+              <div class="subhead">受众</div>
+              <div class="chips" style="display:flex;gap:8px;flex-wrap:wrap;">${aud}</div>
+            ` : ``}
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+
+  openModal({
+    title: "已知搭配表（完美 / 中等 / 不匹配）",
+    wide: true,
+    body: `
+      <div class="muted">这是“泽娜的已知搭配”。需要先在科研里做复盘，才会逐个类型解锁显示；未解锁的类型会显示为“未知”。</div>
+      <div style="margin-top:12px; display:flex; flex-direction:column; gap:12px;">
+        ${archetypeBlocks}
+      </div>
+    `,
+    actions: [{ label: "关闭", kind: "primary", onClick: closeModal }],
+  });
+}
+
+function isFreshStart(state) {
+  return (state.progress?.totalWeeks ?? 0) === 0 && (state.active?.projects?.length ?? 0) === 0 && (state.active?.products?.length ?? 0) === 0;
+}
+
+function stagePrefsModalBody(state, project) {
+  if (!project) return `<div class="muted">未选择项目。</div>`;
+  if (!project.stagePrefs) project.stagePrefs = {};
+  const stage = projectStage(project);
+  if (!project.stagePrefs[stage]) {
+    // initialize with 50s
+    project.stagePrefs[stage] = {};
+    for (const d of STAGE_DIMS[stage] || []) project.stagePrefs[stage][d.key] = 50;
+  }
+  const prefs = project.stagePrefs[stage] || {};
+  const dims = STAGE_DIMS[stage] || [];
+
+  const roleLabels = {
+    product: "产品",
+    design: "设计/UI",
+    protocol: "机制",
+    contract: "合约",
+    infra: "运维/Infra",
+    security: "安全",
+    growth: "增长/BD",
+    compliance: "合规",
+  };
+  const members = state.team?.members || [];
+  const memberOptions = (pickedId) =>
+    `<option value="">（空）</option>` +
+    members
+      .map((m) => `<option value="${escapeHtml(m.id)}" ${m.id === pickedId ? "selected" : ""}>${escapeHtml(m.name)}</option>`)
+      .join("");
+  // stage-specific team roles (each stage can be configured)
+  const stageRoleKeys =
+    stage === "S1"
+      ? ["product", "design", "protocol", "compliance"]
+      : stage === "S2"
+        ? ["contract", "infra", "security", "protocol"]
+        : ["security", "infra", "compliance", "growth"];
+  const t = project.stageTeam?.[stage] || {};
+  const teamRows = stageRoleKeys
+    .map((k) => {
+      return `<label class="autoItem" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <span class="muted" style="min-width:120px;">${escapeHtml(roleLabels[k])}</span>
+        <select class="select" style="min-width:240px;" data-assign="${escapeHtml(project.id)}:${escapeHtml(stage)}:${escapeHtml(k)}">
+          ${memberOptions(t[k] || "")}
+        </select>
+      </label>`;
+    })
+    .join("");
+
+  return `
+    <div class="item">
+      <div class="item__top">
+        <div class="item__title">阶段配置：${escapeHtml(stage)}（${escapeHtml(project.title || "")}）</div>
+      </div>
+      <div class="item__body">
+        <div class="muted">每个阶段的团队分工不同：阶段 1 偏产品/设计/机制/合规；阶段 2 偏合约/运维/安全；阶段 3 偏上线准备（安全/监控/合规/增长）。</div>
+        <div class="divider"></div>
+        <div class="subhead">团队分工（本阶段）</div>
+        <div class="item__actions" style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 2px;">
+          <button class="btn" data-autoteam="${escapeHtml(project.id)}:${escapeHtml(stage)}">一键最佳配置</button>
+          <div class="muted" style="align-self:center;">提示：会按当前团队能力自动分配到最合适岗位。</div>
+        </div>
+        <div class="autoGrid muted" style="grid-template-columns:1fr;">
+          ${teamRows}
+        </div>
+        <div class="divider"></div>
+        <div class="subhead">阶段配方（滑条）</div>
+        ${dims
+          .map((d) => {
+            const val = clamp(Math.round(prefs[d.key] ?? 50), 0, 100);
+            return `
+              <div style="margin:12px 0;">
+                <div class="muted" style="display:flex;justify-content:space-between;">
+                  <span>${escapeHtml(d.left)}</span>
+                  <span>${escapeHtml(d.right)}</span>
+                </div>
+                <input class="input" type="range" min="0" max="100" value="${val}" data-stagepref="${stage}:${d.key}" />
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
+function openStagePrefsModal(state, projectId) {
+  const p = findTarget(state, "project", projectId);
+  if (!p) return;
+  state.selectedTarget = { kind: "project", id: projectId };
+
+  const shouldResume = Boolean(!state.time?.paused);
+  if (state.time) {
+    state.time.resumeAfterStageModal = shouldResume;
+    state.time.paused = true;
   }
 
-  advanceWeek(state);
-  checkEndings(state, restart);
-  render(state);
+  openModal({
+    title: "阶段配置",
+    body: stagePrefsModalBody(state, p),
+    actions: [
+      {
+        label: "确认并继续",
+        kind: "primary",
+        onClick: () => {
+          const p2 = findTarget(state, "project", projectId);
+          if (p2) p2.stagePaused = false;
+          const resume = Boolean(state.time?.resumeAfterStageModal);
+          if (state.time) state.time.resumeAfterStageModal = false;
+          if (state.time && resume) state.time.paused = false;
+          closeModal();
+          render(state);
+        },
+      },
+    ],
+  });
+}
+
+function applyWeeklyTick(state) {
+  seedMarket(state, false);
+  tickWeek(state);
+  log(state, `进入 ${weekLabel(state)}。`, "info");
+}
+
+function advanceTime(state, deltaHours) {
+  if (!state.time) return;
+  const HOURS_PER_DAY = 8;
+  const DAYS_PER_WEEK = 7;
+  const HOURS_PER_WEEK = HOURS_PER_DAY * DAYS_PER_WEEK;
+  const baseYear = 2017;
+  const baseDateUtc = new Date(Date.UTC(2017, 0, 1));
+  const prevDays = Math.floor((state.time.elapsedHours || 0) / HOURS_PER_DAY);
+  const prevWeeks = Math.floor((state.time.elapsedHours || 0) / HOURS_PER_WEEK);
+  state.time.elapsedHours = Math.max(0, (state.time.elapsedHours || 0) + deltaHours);
+  const totalDays = Math.floor(state.time.elapsedHours / HOURS_PER_DAY);
+  const totalWeeks = Math.floor(state.time.elapsedHours / HOURS_PER_WEEK);
+
+  // daily settlement (ops charts become visible)
+  if (totalDays !== prevDays) {
+    for (let d = prevDays + 1; d <= totalDays; d++) {
+      const weekIndex = Math.floor(d / DAYS_PER_WEEK);
+      const years = Math.floor(weekIndex / 52);
+      const week = (weekIndex % 52) + 1;
+      const day = (d % DAYS_PER_WEEK) + 1;
+      state.now.year = baseYear + years;
+      state.now.week = week;
+      state.now.day = day;
+      const date = new Date(baseDateUtc.getTime() + d * 24 * 3600 * 1000);
+      state.now.dateISO = date.toISOString().slice(0, 10);
+      tickDay(state);
+      // weekly settlement at the first day of a new week
+      if (day === 1 && d !== 0) applyWeeklyTick(state);
+    }
+  } else {
+    // keep label in sync even within a day (no settlement)
+    const weekIndex = Math.floor(totalDays / DAYS_PER_WEEK);
+    const years = Math.floor(weekIndex / 52);
+    const week = (weekIndex % 52) + 1;
+    const day = (totalDays % DAYS_PER_WEEK) + 1;
+    state.now.year = baseYear + years;
+    state.now.week = week;
+    state.now.day = day;
+    const date = new Date(baseDateUtc.getTime() + totalDays * 24 * 3600 * 1000);
+    state.now.dateISO = date.toISOString().slice(0, 10);
+  }
+
+  state.progress.totalWeeks = totalWeeks;
+  tickProjects(state, deltaHours);
+  tickResearch(state, deltaHours);
+}
+
+function exposeDevApi(getState, api) {
+  // 仅用于自动化调试/自测；不作为玩法的一部分
+  globalThis.__w3dt = {
+    getState,
+    ...api,
+  };
+}
+
+function checkGameOver(state, restart) {
+  if (state.flags.gameOver) return;
+  if ((state.resources?.cash ?? 0) < 0) {
+    state.flags.gameOver = { kind: "lose", title: "资金链断裂", reason: "现金为负，无法维持团队与基础设施开销。" };
+    log(state, `【资金链断裂】现金为负，无法维持团队与基础设施开销。`, "bad");
+    openModal({
+      title: "资金链断裂",
+      body: `<div>${escapeHtml("现金为负，无法维持团队与基础设施开销。")}</div>`,
+      actions: [
+        { label: "关闭", onClick: closeModal },
+        { label: "重开", kind: "primary", onClick: restart },
+      ],
+    });
+  }
+  if ((state.resources?.complianceRisk ?? 0) >= 100) {
+    state.flags.gameOver = { kind: "lose", title: "监管介入", reason: "合规风险爆表：渠道下架与资金冻结让你被迫停业。" };
+    log(state, `【监管介入】合规风险爆表：渠道下架与资金冻结让你被迫停业。`, "bad");
+    openModal({
+      title: "监管介入",
+      body: `<div>${escapeHtml("合规风险爆表：渠道下架与资金冻结让你被迫停业。")}</div>`,
+      actions: [
+        { label: "关闭", onClick: closeModal },
+        { label: "重开", kind: "primary", onClick: restart },
+      ],
+    });
+  }
+  if ((state.resources?.securityRisk ?? 0) >= 100) {
+    const dayIndex = Math.floor((state.time?.elapsedHours || 0) / 8);
+    if (dayIndex < (state.flags.securityCrisisNextAtDay || 0)) return;
+    state.flags.securityCrisisNextAtDay = dayIndex + 14; // 2-week cooldown
+
+    // Apply punishments but allow continue
+    const cash = Math.max(0, Math.round(state.resources?.cash || 0));
+    const loss = Math.round(Math.min(280_000, Math.max(60_000, cash * 0.18)));
+    state.resources.cash = Math.round((state.resources.cash || 0) - loss);
+    state.resources.reputation = clamp(Math.round((state.resources.reputation || 0) - 12), 0, 100);
+    state.resources.community = clamp(Math.round((state.resources.community || 0) - 6), 0, 100);
+    state.resources.fans = clamp(Math.round((state.resources.fans || 0) * 0.94), 0, 999999999);
+
+    // Hit live products: user drop + price crash; pull risks back from 100 to avoid chain triggers
+    for (const prod of state.active?.products || []) {
+      if (prod?.kpi) {
+        prod.kpi.users = Math.round(Math.max(0, (prod.kpi.users || 0) * 0.93));
+        prod.kpi.dau = Math.round(Math.max(0, (prod.kpi.dau || 0) * 0.90));
+        if (typeof prod.kpi.tokenPrice === "number") prod.kpi.tokenPrice = Math.max(0.01, prod.kpi.tokenPrice * (0.78 + Math.random() * 0.08));
+      }
+      if (prod?.risk) {
+        prod.risk.security = clamp(Math.round((prod.risk.security || 10) + 12), 0, 100);
+      }
+    }
+
+    state.resources.securityRisk = 72;
+    log(state, `【重大安全事故】安全风险爆表触发事故：现金 -¥${loss.toLocaleString("zh-CN")}，声誉下降，用户与币价受挫（可继续经营）。`, "bad");
+    openModal({
+      title: "重大安全事故（可继续）",
+      body: `
+        <div>${escapeHtml("安全风险爆表：发生重大事故，声誉与现金流受挫，但你仍可继续经营（需要尽快降低风险）。")}</div>
+        <div class="divider"></div>
+        <div class="muted">处罚：现金 -¥${escapeHtml(loss.toLocaleString("zh-CN"))} · 声誉 -12 · 社区 -6 · 粉丝 -6% · 主要产品用户/币价下滑</div>
+        <div class="muted" style="margin-top:8px;">冷却：14 天内不会重复触发同类事故（避免连环弹窗）。</div>
+      `,
+      actions: [{ label: "继续经营", kind: "primary", onClick: closeModal }],
+    });
+  }
 }
 
 function main() {
   let state = normalizeState(load() || initNewState());
-  migrateCompensation(state);
-  // 启动时补齐市场与公司任务（避免旧存档出现“职业页空空如也”）
   seedMarket(state, false);
-  ensureCompanyTickets(state);
-  seedEventInbox(state);
-  refreshAP(state);
-
-  let autoTimer = null;
-  let autoLastLogAt = 0;
-  const stopAuto = () => {
-    if (autoTimer) clearInterval(autoTimer);
-    autoTimer = null;
-  };
-  const startAuto = () => {
-    stopAuto();
-    const ms = clamp(Math.round(state.settings?.auto?.stepMs ?? 2000), 500, 5000);
-    autoTimer = setInterval(() => {
-      normalizeState(state);
-      if (state.flags.gameOver) return stopAuto();
-      if (!state.settings.auto.enabled) return stopAuto();
-
-      // 如果用户此刻打开了弹窗（新档/重置/说明等），自动化先暂停，避免抢焦点/关弹窗
-      const modalEl = document.getElementById("modal");
-      if (modalEl && !modalEl.classList.contains("is-hidden")) return;
-
-      // AP 不够时：根据选项自动结束本周
-      if (state.ap.now <= 0) {
-        if (state.settings.auto.autoEndWeek) endWeek(state, restart);
-        else stopAuto();
-        return;
-      }
-
-      const step = pickAutoStep(state);
-      if (!step) return;
-
-      // 低频提示：每 20 秒最多一条，避免刷屏
-      const now = Date.now();
-      if (now - autoLastLogAt > 20000) {
-        autoLastLogAt = now;
-        log(state, state.settings.lang === "en" ? `Automation: ${step.reason}` : `自动化：${step.reason}`);
-      }
-
-      if (step.kind === "accept") {
-        const { kind, id } = step.target || {};
-        if (kind === "direct") {
-          const order = state.market.direct.find((x) => x.id === id);
-          if (order) activateDirect(state, order);
-        } else if (kind === "platform") {
-          const contest = state.market.platform.find((x) => x.id === id);
-          if (contest) activatePlatform(state, contest);
-        }
-        render(state);
-        return;
-      }
-
-      if (step.kind === "career") {
-        if (step.op === "acceptJob") {
-          if (state.settings.auto.allowAcceptJob) acceptJob(state, step.id);
-        }
-        if (step.op === "quitJob") {
-          if (state.settings.auto.allowQuitJob) quitJob(state);
-        }
-        render(state);
-        return;
-      }
-
-      if (step.kind === "selectAndAction") {
-        state.selectedTarget = step.target;
-        const target = findTarget(state, step.target.kind, step.target.id);
-        const cost = actionCost(state, step.key, target);
-        if (cost > state.ap.now) {
-          if (state.settings.auto.autoEndWeek) endWeek(state, restart);
-          else stopAuto();
-          return;
-        }
-        const before = state.ap.now;
-        doAction(state, step.key, null); // 自动化不弹 toast（避免用户不想要的中断）
-        if (state.ap.now === before && state.settings.auto.autoEndWeek && state.ap.now <= 1) endWeek(state, restart);
-        render(state);
-        return;
-      }
-
-      if (step.kind === "action") {
-        const cost = actionCost(state, step.key, null);
-        if (cost > state.ap.now) {
-          if (state.settings.auto.autoEndWeek) endWeek(state, restart);
-          else stopAuto();
-          return;
-        }
-        const before = state.ap.now;
-        doAction(state, step.key, null);
-        if (state.ap.now === before && state.settings.auto.autoEndWeek && state.ap.now <= 1) endWeek(state, restart);
-        render(state);
-        return;
-      }
-    }, ms);
+  let lastUiRenderAt = 0;
+  const RENDER_INTERVAL_MS = 250;
+  const renderThrottled = (ts) => {
+    if (ts - lastUiRenderAt < RENDER_INTERVAL_MS) return;
+    lastUiRenderAt = ts;
+    render(state);
   };
 
-  // 兼容旧存档：如果没有 X 时间线内容，先补几条（纯氛围，不影响数值）
-  if (!state.x?.feed || state.x.feed.length === 0) {
-    addXPosts(state, 4);
-    save(state);
-  }
+  const refreshDevApi = () => {
+    exposeDevApi(
+      () => state,
+      {
+        advanceHours: (h) => {
+          const n = Number(h) || 0;
+          if (n <= 0) return;
+          advanceTime(state, n);
+          render(state);
+        },
+        // 更贴近真实 tick：推进 + 检查 game over + 触发阶段门（如需要）
+        step: (h) => {
+          const n = Number(h) || 0;
+          if (n <= 0) return { ok: false, msg: "hours<=0" };
+          if (state.flags.gameOver) return { ok: false, msg: "gameOver" };
+          advanceTime(state, n);
+          checkGameOver(state, restart);
+          const modalEl = document.getElementById("modal");
+          const modalOpen = modalEl && !modalEl.classList.contains("is-hidden");
+          if (!modalOpen && Array.isArray(state.stageQueue) && state.stageQueue.length > 0) {
+            const next = state.stageQueue.shift();
+            if (next?.kind === "project" && next?.id) openStagePrefsModal(state, next.id);
+            save(state);
+          }
+          render(state);
+          return { ok: true };
+        },
+        openNextStageModal: () => {
+          const modalEl = document.getElementById("modal");
+          const modalOpen = modalEl && !modalEl.classList.contains("is-hidden");
+          if (modalOpen) return false;
+          if (!Array.isArray(state.stageQueue) || state.stageQueue.length === 0) return false;
+          const next = state.stageQueue.shift();
+          if (next?.kind === "project" && next?.id) {
+            openStagePrefsModal(state, next.id);
+            save(state);
+            return true;
+          }
+          return false;
+        },
+        setCash: (v) => {
+          normalizeState(state);
+          state.resources.cash = Math.round(Number(v) || 0);
+          render(state);
+          return state.resources.cash;
+        },
+        grantTechPoints: (n) => {
+          normalizeState(state);
+          const add = Math.max(0, Math.round(Number(n) || 0));
+          state.resources.techPoints = Math.max(0, (state.resources.techPoints || 0) + add);
+          render(state);
+          return state.resources.techPoints;
+        },
+        forceSave: () => {
+          save(state);
+          return true;
+        },
+      }
+    );
+  };
+  refreshDevApi();
 
-  // 仅对“全新第一周”补一次满行动点
+  // first-week convenience: start with time paused but ready
   if (isFreshStart(state) && !state.flags.startFilled) {
-    state.ap.now = state.ap.max;
     state.flags.startFilled = true;
     save(state);
   }
@@ -443,303 +509,739 @@ function main() {
     closeModal();
     resetStorage();
     state = initNewState();
+    refreshDevApi();
+    save(state);
     render(state);
-    switchTab("workbench");
+    switchTab("dashboard");
   };
 
   bind(state, {
-    onAction: (key) => {
-      doAction(state, key, (msg) => toast(state, msg));
-      render(state);
-    },
     onAccept: (kind, id) => {
-      if (kind === "direct") {
-        const order = state.market.direct.find((x) => x.id === id);
-        if (!order) return;
-        openDirectNegotiation(state, order, () => render(state));
-      } else {
-        const contest = state.market.platform.find((x) => x.id === id);
-        if (!contest) return;
-        const r = activatePlatform(state, contest);
-        if (!r.ok) toast(state, r.msg);
+      if (kind === "project") {
+        const r = startProject(state, id);
+        if (!r.ok) toast(r.msg);
+      }
+      if (kind === "hire") {
+        const r = hire(state, id);
+        if (!r.ok) toast(r.msg);
       }
       render(state);
     },
     onSelect: (kind, id) => {
       state.selectedTarget = { kind, id };
-      log(
-        state,
-        t(state, "log.target.switched", {
-          kind: t(state, `log.target.kind.${kind === "direct" ? "direct" : kind === "platform" ? "platform" : "company"}`),
-          id,
-        })
-      );
       render(state);
     },
-    onCareer: (raw) => {
-      if (!raw) return;
-      if (raw === "quitJob") {
-        const r = quitJob(state);
-        if (!r.ok) toast(state, r.msg);
-        render(state);
-        return;
-      }
-      if (raw === "requestRemote") {
-        const r = requestRemoteWork(state);
-        if (!r.ok) toast(state, r.msg);
-        render(state);
-        return;
-      }
-      if (raw.startsWith("acceptJob:")) {
-        const id = raw.split(":")[1];
-        const r = acceptJob(state, id);
-        if (!r.ok) toast(state, r.msg);
-        render(state);
-        return;
-      }
+    onStage: (kind, id) => {
+      if (kind !== "project") return;
+      openStagePrefsModal(state, id);
+      render(state);
     },
-    onShop: (raw) => {
-      if (!raw) return;
-      if (raw.startsWith("buy:")) {
-        const key = raw.split(":")[1];
-        const r = buyItem(state, key);
-        if (!r.ok) toast(state, r.msg);
-        render(state);
+    onAutoTeam: (projectId, stageKey) => {
+      const r = autoAssignProjectStageTeam(state, projectId, stageKey);
+      if (!r.ok) {
+        toast(r.msg);
         return;
       }
-      if (raw.startsWith("use:")) {
-        const key = raw.split(":")[1];
-        const r = useItem(state, key);
-        if (!r.ok) toast(state, r.msg);
-        render(state);
-        return;
-      }
+      // rerender modal body in-place so selects update immediately
+      const p = findTarget(state, "project", projectId);
+      const body = document.getElementById("modalBody");
+      if (p && body) body.innerHTML = stagePrefsModalBody(state, p);
+      save(state);
+      render(state);
     },
-    onInbox: (raw) => {
-      if (!raw) return;
-      const [op, id] = raw.split(":");
-      if (!op || !id) return;
-      const item = (state.inbox?.items || []).find((x) => x.id === id);
-      if (!item) return;
-      const defs = inboxDefs();
-      const def = defs.find((d) => d.id === item.def);
-      if (!def) {
-        // def 不存在：直接移除
-        state.inbox.items = state.inbox.items.filter((x) => x.id !== id);
-        render(state);
-        return;
-      }
+    onPostmortem: (productId) => {
+      const prod = findTarget(state, "product", productId);
+      if (!prod) return;
+      const members = state.team?.members || [];
+      const options =
+        `<option value="">（未指派）</option>` +
+        members.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join("");
+      openModal({
+        title: "泽娜复盘（解锁已知搭配）",
+        body: `
+          <div class="muted">复盘对象：${escapeHtml(prod.title || prod.id)}（类型 ${escapeHtml(String(prod.archetype || ""))}）。完成后会解锁该类型的泽娜已知搭配表。</div>
+          <div style="margin-top:12px;">
+            <div class="muted" style="margin-bottom:6px;">指派负责人</div>
+            <select class="select" id="pmAssignee2">${options}</select>
+          </div>
+        `,
+        actions: [
+          { label: "取消", onClick: closeModal },
+          {
+            label: "开始复盘",
+            kind: "primary",
+            onClick: () => {
+              const selA = /** @type {HTMLSelectElement|null} */ (document.getElementById("pmAssignee2"));
+              const assigneeId = String(selA?.value || "") || null;
+              const r2 = startResearchNode(state, "postmortem_zena", assigneeId, { productId });
+              if (!r2.ok) {
+                toast(r2.msg);
+                return;
+              }
+              closeModal();
+              save(state);
+              render(state);
+              switchTab("research");
+            },
+          },
+        ],
+      });
+    },
+    onDoneDetail: (doneId) => {
+      const list = Array.isArray(state.history?.projectsDone) ? state.history.projectsDone : [];
+      const d = list.find((x) => x.id === doneId) || null;
+      if (!d) return;
+      const pf = (PLATFORMS || []).find((x) => x.key === d.platform)?.name || d.platform || "—";
+      const prodId = d.kind === "launch" ? d.productId : d.baseProductId;
+      const prod = prodId ? findTarget(state, "product", prodId) : null;
+      const earned = prod ? Math.round(Number(prod.kpi?.cumProfit) || 0) : 0;
+      const rev = prod ? Math.round(Number(prod.kpi?.cumRevenue) || 0) : 0;
+      const users = prod ? Math.round(Number(prod.kpi?.users) || 0) : 0;
+      const dau = prod ? Math.round(Number(prod.kpi?.dau) || 0) : 0;
+      const tokenPrice = prod ? Number(prod.kpi?.tokenPrice) || 0 : 0;
+      const cost = Math.round(Number(d.costSpent) || 0);
+      const fansG = Math.round(Number(d.fansGained) || 0);
+      const fansAll = Math.round(Number(state.resources?.fans) || 0);
+      const known = isZenaKnown(state, d.archetype);
+      const qualityLine = known ? `质量 ${clamp(Math.round(1 + clamp(Math.round(d.matchPct || 0), 0, 100) / 100 * 9), 1, 10)}/10` : "质量：未知（需复盘）";
 
-      const remove = () => {
-        state.inbox.items = (state.inbox.items || []).filter((x) => x.id !== id);
+      const stageDims = {
+        S1: [
+          { key: "uxVsMech", left: "产品体验", right: "机制深度" },
+          { key: "decentralVsControl", left: "去中心化叙事", right: "可控性" },
+          { key: "complianceVsAggro", left: "合规保守", right: "增长激进" },
+        ],
+        S2: [
+          { key: "onchainVsOffchain", left: "链上逻辑", right: "链下服务" },
+          { key: "buildVsReuse", left: "自研", right: "复用/依赖" },
+          { key: "speedVsQuality", left: "速度", right: "代码质量" },
+        ],
+        S3: [
+          { key: "securityDepthVsSpeed", left: "安全深度", right: "上线速度" },
+          { key: "monitoringVsFeatures", left: "监控/应急", right: "功能完善" },
+          { key: "complianceVsMarketing", left: "合规/材料", right: "市场攻势" },
+        ],
+      };
+      const prefs = d.stagePrefs || {};
+      const team = d.stageTeam || {};
+      const stageBlock = (stageKey) => {
+        const dims = stageDims[stageKey] || [];
+        const pv = prefs?.[stageKey] || {};
+        const tv = team?.[stageKey] || {};
+        const rows = dims
+          .map((it) => {
+            const v = clamp(Math.round(pv?.[it.key] ?? 50), 0, 100);
+            const side = v === 50 ? "平衡" : v > 50 ? it.right : it.left;
+            const intensity = Math.abs(v - 50);
+            const pri = intensity >= 30 ? "高" : intensity >= 15 ? "中" : "低";
+            return `<div class="statRow"><div class="statRow__k">${escapeHtml(it.left)} ↔ ${escapeHtml(it.right)}</div><div class="statRow__v">${escapeHtml(`${side}（${pri}·${v}）`)}</div></div>`;
+          })
+          .join("");
+        const roleLines = Object.entries(tv || {})
+          .map(([role, mid]) => {
+            const m = (state.team?.members || []).find((x) => x.id === mid);
+            return `<div class="statRow"><div class="statRow__k">${escapeHtml(role)}</div><div class="statRow__v">${escapeHtml(m?.name || "（空）")}</div></div>`;
+          })
+          .join("");
+        return `
+          <div class="item" style="margin-top:12px;">
+            <div class="item__top"><div class="item__title">阶段 ${escapeHtml(stageKey)}</div></div>
+            <div class="item__body">
+              <div class="subhead">配方选择 / 优先级</div>
+              <div class="memberCard__stats">${rows || `<div class="muted">未记录。</div>`}</div>
+              <div class="divider"></div>
+              <div class="subhead">团队分工</div>
+              <div class="memberCard__stats">${roleLines || `<div class="muted">未记录。</div>`}</div>
+            </div>
+          </div>
+        `;
       };
 
-      const open = () => {
-        const choices = Array.isArray(def.choices) ? def.choices : [];
-        const vars = item.payload || {};
-        openModal({
-          title: t(state, def.titleKey, vars),
-          body: `<div>${escapeHtml(t(state, def.descKey, vars))}</div>`,
-          actions: [
-            ...choices.map((c) => ({
-              label: t(state, c.labelKey),
-              kind: c.primary ? "primary" : undefined,
-              onClick: () => {
-                closeModal();
-                try {
-                  c.apply?.(state, item.payload || {});
-                } catch (e) {
-                  log(state, state.settings.lang === "en" ? "Inbox choice failed to apply." : "事件选项处理失败（已忽略）。", "warn");
-                }
-                remove();
-                render(state);
+      openModal({
+        title: "项目详情",
+        wide: true,
+        body: `
+          <div class="item">
+            <div class="item__top">
+              <div>
+                <div class="item__title">${escapeHtml(d.title || "（未命名）")}</div>
+                <div class="muted" style="margin-top:6px;">
+                  评分 ${escapeHtml(String(Number(d.avgRating10 || 0).toFixed(1)))} / 10 · 产品分 ${escapeHtml(String(d.productScore10 || 0))}/10 · 技术分 ${escapeHtml(String(d.techScore10 || 0))}/10 · ${escapeHtml(qualityLine)}
+                </div>
+              </div>
+            </div>
+            <div class="item__body">
+              <div class="kvs">
+                <div class="kv"><div class="kv__k">题材/叙事</div><div class="kv__v">${escapeHtml((NARRATIVES.find((x) => x.key === d.narrative) || { name: d.narrative }).name)}</div></div>
+                <div class="kv"><div class="kv__k">类型</div><div class="kv__v">${escapeHtml((ARCHETYPES.find((x) => x.key === d.archetype) || { name: d.archetype }).name)}</div></div>
+                <div class="kv"><div class="kv__k">链</div><div class="kv__v">${escapeHtml((CHAINS.find((x) => x.key === d.chain) || { name: d.chain }).name)}</div></div>
+                <div class="kv"><div class="kv__k">受众</div><div class="kv__v">${escapeHtml((AUDIENCES.find((x) => x.key === d.audience) || { name: d.audience }).name)}</div></div>
+                <div class="kv"><div class="kv__k">平台</div><div class="kv__v">${escapeHtml(pf)}</div></div>
+                <div class="kv"><div class="kv__k">项目大小</div><div class="kv__v">L${escapeHtml(String(d.scale || 1))}</div></div>
+                <div class="kv"><div class="kv__k">成本</div><div class="kv__v">${escapeHtml(`¥${cost.toLocaleString("zh-CN")}`)}</div></div>
+                <div class="kv"><div class="kv__k">获得粉丝</div><div class="kv__v">+${escapeHtml(fansG.toLocaleString("zh-CN"))}（当前总粉丝 ${escapeHtml(fansAll.toLocaleString("zh-CN"))}）</div></div>
+              </div>
+            </div>
+          </div>
+          ${prod ? `
+            <div class="item" style="margin-top:12px;">
+              <div class="item__top">
+                <div class="item__title">产品现状</div>
+                <div class="chips">${tokenPrice ? `<span class="chip">币价 $${escapeHtml(tokenPrice.toFixed(2))}</span>` : ""}</div>
+              </div>
+              <div class="item__body">
+                <div class="kvs">
+                  <div class="kv"><div class="kv__k">用户</div><div class="kv__v">${escapeHtml(users.toLocaleString("zh-CN"))}</div></div>
+                  <div class="kv"><div class="kv__k">DAU</div><div class="kv__v">${escapeHtml(dau.toLocaleString("zh-CN"))}</div></div>
+                  <div class="kv"><div class="kv__k">累计收入</div><div class="kv__v">¥${escapeHtml(rev.toLocaleString("zh-CN"))}</div></div>
+                  <div class="kv"><div class="kv__k">累计利润</div><div class="kv__v">¥${escapeHtml(earned.toLocaleString("zh-CN"))}</div></div>
+                </div>
+              </div>
+            </div>
+          ` : `
+            <div class="muted" style="margin-top:12px;">提示：该条目对应的产品当前未找到（可能是旧存档数据或尚未生成）。</div>
+          `}
+          ${stageBlock("S1")}
+          ${stageBlock("S2")}
+          ${stageBlock("S3")}
+        `,
+        actions: [
+          { label: "关闭", kind: "primary", onClick: closeModal },
+        ],
+      });
+    },
+    onAbandon: (kind, id) => {
+      if (kind !== "project") return;
+      const p = findTarget(state, "project", id);
+      if (!p) return;
+      openModal({
+        title: "废弃项目",
+        body: `
+          <div class="muted">确认要废弃该项目吗？废弃后会从进行中列表移除，并清除待配置队列（不会返还已消耗的现金）。</div>
+          <div class="divider"></div>
+          <div class="item">
+            <div class="item__top">
+              <div>
+                <div class="item__title">${escapeHtml(p.title || "")}</div>
+                <div class="muted" style="margin-top:6px;">当前阶段 ${escapeHtml(projectStage(p))} · 进度 ${clamp(Math.round(p.stageProgress || 0), 0, 100)}%</div>
+              </div>
+            </div>
+          </div>
+        `,
+        actions: [
+          { label: "取消", onClick: closeModal },
+          {
+            label: "确认废弃",
+            kind: "primary",
+            onClick: () => {
+              const r = abandonProject(state, id);
+              if (!r.ok) toast(r.msg);
+              closeModal();
+              save(state);
+              render(state);
+            },
+          },
+        ],
+      });
+    },
+    onStagePrefChange: (stage, key, val) => {
+      ensureSelection(state);
+      const sel = state.selectedTarget;
+      const p = sel && sel.kind === "project" ? findTarget(state, "project", sel.id) : null;
+      if (!p) return;
+      if (!p.stagePrefs) p.stagePrefs = {};
+      if (!p.stagePrefs[stage]) p.stagePrefs[stage] = {};
+      p.stagePrefs[stage][key] = clamp(Math.round(val || 0), 0, 100);
+      render(state);
+    },
+    onOpsChange: (k, productId, rawVal) => {
+      const p = findTarget(state, "product", productId);
+      if (!p) return;
+      p.kpi = p.kpi || {};
+      p.ops = p.ops || {};
+      if (k === "feeRateBps") {
+        p.kpi.feeRateBps = clamp(Math.round(parseFloat(String(rawVal || "0")) || 0), 0, 80);
+      }
+      if (k === "buybackPct") {
+        p.ops.buybackPct = clamp((parseFloat(String(rawVal || "0")) || 0) / 100, 0, 0.5);
+      }
+      if (k === "emissions") {
+        p.ops.emissions = clamp((parseFloat(String(rawVal || "0")) || 0) / 100, 0, 1);
+      }
+      if (k === "incentivesBudgetWeekly") {
+        p.ops.incentivesBudgetWeekly = clamp(Math.round(parseFloat(String(rawVal || "0")) || 0), 0, 999999999);
+      }
+      render(state);
+    },
+    onAssign: (projectId, stageKey, roleKey, memberIdOrNull) => {
+      setProjectTeam(state, projectId, stageKey, roleKey, memberIdOrNull);
+      render(state);
+    },
+    onInboxChoice: (itemId, choiceKey) => {
+      const r = applyInboxChoice(state, itemId, choiceKey);
+      if (!r?.ok && r?.msg) toast(r.msg);
+      save(state);
+      checkGameOver(state, restart);
+      render(state);
+    },
+    onLayoutChange: () => {
+      save(state);
+    },
+    onResearch: (raw) => {
+      const s = String(raw || "");
+      if (s.startsWith("treeNode:")) {
+        const nodeId = s.split(":")[1] || "";
+        const members = state.team?.members || [];
+        const options =
+          `<option value="">（未指派）</option>` +
+          members.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join("");
+        // Special: postmortem requires choosing a historical product/project
+        const n = (RESEARCH_TREE?.nodes || []).find((x) => x.id === nodeId) || null;
+        if (n?.kind === "postmortem") {
+          const prods = state.active?.products || [];
+          const prodOptions =
+            `<option value="">（请选择）</option>` +
+            prods.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.title || p.id)}（${escapeHtml(String(p.archetype || ""))}）</option>`).join("");
+          openModal({
+            title: "泽娜复盘（解锁已知搭配）",
+            body: `
+              <div class="muted">选择一个历史产品/项目做复盘。复盘完成后，泽娜会解锁该【类型】的已知搭配表（可重复）。</div>
+              <div style="margin-top:12px;">
+                <div class="muted" style="margin-bottom:6px;">选择历史产品/项目</div>
+                <select class="select" id="pmProductId">${prodOptions}</select>
+              </div>
+              <div style="margin-top:12px;">
+                <div class="muted" style="margin-bottom:6px;">指派负责人</div>
+                <select class="select" id="pmAssignee">${options}</select>
+              </div>
+            `,
+            actions: [
+              { label: "取消", onClick: closeModal },
+              {
+                label: "开始复盘",
+                kind: "primary",
+                onClick: () => {
+                  const selP = /** @type {HTMLSelectElement|null} */ (document.getElementById("pmProductId"));
+                  const productId = String(selP?.value || "") || "";
+                  const selA = /** @type {HTMLSelectElement|null} */ (document.getElementById("pmAssignee"));
+                  const assigneeId = String(selA?.value || "") || null;
+                  const r = startResearchNode(state, nodeId, assigneeId, { productId });
+                  if (!r.ok) {
+                    toast(r.msg);
+                    return;
+                  }
+                  save(state);
+                  render(state);
+                  switchTab("research");
+                  closeModal();
+                },
               },
-            })),
+            ],
+          });
+          return;
+        }
+
+        openModal({
+          title: "开始科研",
+          body: `
+            <div class="muted">选择负责人（可为空）。开始后会占用一条研发队列，并随时间推进。</div>
+            <div style="margin-top:12px;">
+              <div class="muted" style="margin-bottom:6px;">指派负责人</div>
+              <select class="select" id="rtAssignee">${options}</select>
+            </div>
+          `,
+          actions: [
+            { label: "取消", onClick: closeModal },
             {
-              label: t(state, "ui.inbox.ignore"),
+              label: "开始",
+              kind: "primary",
               onClick: () => {
-                closeModal();
-                remove();
-                log(state, t(state, "inbox.log.ignored"), "info");
+                const sel = /** @type {HTMLSelectElement|null} */ (document.getElementById("rtAssignee"));
+                const assigneeId = String(sel?.value || "") || null;
+                const r = startResearchNode(state, nodeId, assigneeId);
+                if (!r.ok) toast(r.msg);
+                save(state);
                 render(state);
+                switchTab("research");
+                closeModal();
               },
             },
           ],
         });
-      };
+        return;
+      }
 
-      if (op === "ignore") {
-        remove();
-        log(state, t(state, "inbox.log.ignored"), "info");
-        render(state);
-        return;
-      }
-      if (op === "open") {
-        open();
-        return;
-      }
-    },
-    onClearInbox: () => {
-      if (!state.inbox) state.inbox = { items: [] };
-      state.inbox.items = [];
-      log(state, t(state, "inbox.log.cleared"), "info");
-      save(state);
-      render(state);
-    },
-    onEndWeek: () => {
-      // 自动化开启时：避免“确认弹窗”被自动化抢焦点，直接结束本周
-      if (state.settings?.auto?.enabled) {
-        endWeek(state, restart);
-        return;
-      }
+      const [op, key] = s.split(":");
+      if (op !== "upgrade") return;
+      // 改为“开始研发→随时间推进→完成”
+      const members = state.team?.members || [];
+      const options =
+        `<option value="">（未指派）</option>` +
+        members.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join("");
       openModal({
-        title: t(state, "modal.endWeek.title"),
-        body: `<div>${escapeHtml(t(state, "modal.endWeek.body"))}</div>`,
-        actions: [
-          { label: t(state, "modal.common.cancel"), onClick: closeModal },
-          {
-            label: t(state, "modal.common.confirm"),
-            kind: "primary",
-            onClick: () => {
-              closeModal();
-              endWeek(state, restart);
-            },
-          },
-        ],
-      });
-    },
-    onSave: () => {
-      save(state);
-      toast(state, t(state, "toast.saved"));
-      render(state);
-    },
-    onClearLog: () => {
-      state.log = [];
-      save(state);
-      render(state);
-    },
-    onNewGame: () => {
-      openNewGameModal(state, (name) => {
-        state = initNewState();
-        if (name) state.player.name = name;
-        save(state);
-        render(state);
-        switchTab("workbench");
-      });
-    },
-    onResetGame: () => {
-      openModal({
-        title: t(state, "modal.reset.title"),
+        title: "开始研发",
         body: `
-          <div><b>${escapeHtml(t(state, "modal.reset.body"))}</b></div>
+          <div class="muted">研发需要时间推进；指派更合适的人会更快完成。</div>
           <div style="margin-top:12px;">
-            <div class="muted" style="margin-bottom:6px;">${escapeHtml(t(state, "ui.newGame.name.label"))}</div>
-            <input id="newPlayerName" class="input" type="text" value="${escapeHtml(String(state?.player?.name || ""))}" placeholder="${escapeHtml(t(state, "ui.newGame.name.placeholder"))}" />
-            <div class="muted" style="margin-top:6px;">${escapeHtml(t(state, "ui.newGame.name.hint"))}</div>
+            <div class="muted" style="margin-bottom:6px;">指派研发负责人</div>
+            <select class="select" id="researchAssignee">${options}</select>
           </div>
         `,
         actions: [
-          { label: t(state, "modal.common.cancel"), onClick: closeModal },
+          { label: "取消", onClick: closeModal },
           {
-            label: t(state, "modal.reset.confirm"),
+            label: "开始",
             kind: "primary",
             onClick: () => {
-              const raw = /** @type {HTMLInputElement|null} */ (document.getElementById("newPlayerName"))?.value || "";
-              const name = raw.trim();
+              const sel = /** @type {HTMLSelectElement|null} */ (document.getElementById("researchAssignee"));
+              const assigneeId = String(sel?.value || "") || null;
+              // 旧按钮仍走原逻辑（版本升级），科研树走 node 逻辑
+              const r = startResearch(state, key, assigneeId);
+              if (!r.ok) toast(r.msg);
               closeModal();
-              resetStorage();
-              state = initNewState();
-              if (name) state.player.name = name;
               save(state);
               render(state);
-              switchTab("workbench");
             },
           },
         ],
       });
     },
-    onFeedback: () => {
-      const src = String(FEEDBACK_FORM_EMBED_URL || "").trim();
-      if (!src) {
-        openModal({
-          title: t(state, "modal.feedback.title"),
-          body: `<div class="muted">${escapeHtml(t(state, "modal.feedback.body"))}</div>`,
-          actions: [{ label: t(state, "modal.toast.ok"), kind: "primary", onClick: closeModal }],
-        });
-        return;
-      }
+    onToggleTime: () => {
+      normalizeState(state);
+      if (state.flags.gameOver) return;
+      state.time.paused = !state.time.paused;
+      render(state);
+    },
+    onTimeSpeedChange: (speed) => {
+      normalizeState(state);
+      if (state.flags.gameOver) return;
+      state.time.speed = clamp(Number(speed) || 1, 0.5, 8);
+      render(state);
+    },
+    onSave: () => {
+      save(state);
+      toast("已保存。");
+      render(state);
+    },
+    onNewGame: () => {
       openModal({
-        title: t(state, "modal.feedback.title"),
+        title: "新档",
+        body: `<div class="muted">创建新存档会覆盖当前进度（可先点“保存”）。</div>`,
+        actions: [
+          { label: "取消", onClick: closeModal },
+          {
+            label: "创建",
+            kind: "primary",
+            onClick: () => {
+              closeModal();
+              state = initNewState();
+              refreshDevApi();
+              save(state);
+              render(state);
+              switchTab("dashboard");
+            },
+          },
+        ],
+      });
+    },
+    onCreateProject: (baseProductId = null) => {
+      const opt = (list, val) => list.map((x) => `<option value="${escapeHtml(x.key)}" ${x.key === val ? "selected" : ""}>${escapeHtml(x.name)}</option>`).join("");
+      const products = state.active?.products || [];
+      const prodOptions =
+        `<option value="">（不选择：开发新项目）</option>` +
+        products.map((p) => `<option value="${escapeHtml(p.id)}" ${p.id === baseProductId ? "selected" : ""}>${escapeHtml(p.title)}</option>`).join("");
+
+      const baseProd = baseProductId ? products.find((p) => p.id === baseProductId) : null;
+      const upgrades = baseProd ? upgradeOptionsForProduct(baseProd) : [];
+      const upgradeOptions =
+        upgrades.length > 0
+          ? upgrades.map((u) => `<option value="${escapeHtml(u.key)}">${escapeHtml(u.title)}</option>`).join("")
+          : `<option value="">（该产品暂无可用二次开发）</option>`;
+
+      openModal({
+        title: "立项 / 二次开发",
         body: `
-          <div class="muted" style="margin-bottom:10px;">${escapeHtml(t(state, "modal.feedback.body"))}</div>
-          <iframe
-            src="${escapeHtml(src)}"
-            style="width:100%;height:min(70vh,640px);border:0;border-radius:12px;background:#0b1020;"
-            frameborder="0"
-            marginheight="0"
-            marginwidth="0"
-          >${escapeHtml(t(state, "modal.feedback.loading"))}</iframe>
+          <div class="muted">你可以选择：① 新项目；② 基于某个已上线产品做二次开发（扩展能力）。</div>
+          <div style="margin-top:12px;">
+            <div class="muted" style="margin-bottom:6px;">基于已有产品（二次开发，可选）</div>
+            <select class="select" id="cp_baseProduct">${prodOptions}</select>
+          </div>
+
+          ${baseProd ? `
+            <div style="margin-top:12px;">
+              <div class="muted" style="margin-bottom:6px;">二次开发方向</div>
+              <select class="select" id="cp_upgradeKey">${upgradeOptions}</select>
+              <div class="muted" style="margin-top:8px;">完成后会把扩展效果合并回原产品（例如钱包 +DEX 会开始产生 TVL/Volume/手续费）。</div>
+            </div>
+          ` : (() => {
+            const a = ARCHETYPES[0]?.key;
+            const n = NARRATIVES[0]?.key;
+            const c = CHAINS[0]?.key;
+            const u = AUDIENCES[0]?.key;
+            const known = isZenaKnown(state, a);
+            const combo = knownComboBreakdown(a, n, c, u);
+            const chip2 = (label, it) => `<span class="chip chip--${escapeHtml(it.tone)}">${escapeHtml(label)}：${escapeHtml(it.label)}</span>`;
+            const hi = (label, it, pickedName) => (it.key === "perfect" ? `<span class="chip chip--good">高匹配：${escapeHtml(label)}=${escapeHtml(pickedName)}</span>` : "");
+            const nName0 = (NARRATIVES.find((x) => x.key === n) || { name: n }).name;
+            const cName0 = (CHAINS.find((x) => x.key === c) || { name: c }).name;
+            const uName0 = (AUDIENCES.find((x) => x.key === u) || { name: u }).name;
+            return `
+            <div class="divider"></div>
+            <div class="subhead">新项目配置</div>
+            <div style="margin-top:10px; display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+              <label class="muted">类型（Archetype）
+                <select class="select" id="cp_archetype">${opt(ARCHETYPES, ARCHETYPES[0]?.key)}</select>
+              </label>
+              <label class="muted">题材/叙事（Narrative）
+                <select class="select" id="cp_narrative">${opt(NARRATIVES, NARRATIVES[0]?.key)}</select>
+              </label>
+              <label class="muted">链/生态（Chain）
+                <select class="select" id="cp_chain">${opt(CHAINS, CHAINS[0]?.key)}</select>
+              </label>
+              <label class="muted">受众（Audience）
+                <select class="select" id="cp_audience">${opt(AUDIENCES, AUDIENCES[0]?.key)}</select>
+              </label>
+              <label class="muted">规模（Scale）
+                <select class="select" id="cp_scale">
+                  <option value="1" selected>小（L1）</option>
+                  <option value="2">中（L2）</option>
+                  <option value="3">大（L3）</option>
+                </select>
+              </label>
+            </div>
+            <div class="divider"></div>
+            <div class="item" style="margin-top:8px;">
+              <div class="item__top">
+                <div>
+                  <div class="item__title">匹配信息（已知搭配）</div>
+                  <div class="muted" style="margin-top:6px;">根据“类型×叙事/链/受众”的已知搭配表计算。</div>
+                </div>
+              </div>
+              <div class="item__body">
+                <div id="cp_matchInfo">
+                  ${known ? `
+                    <div class="chips" style="display:flex;gap:10px;flex-wrap:wrap;">
+                      ${chip2("叙事", combo.narrative)}
+                      ${chip2("链", combo.chain)}
+                      ${chip2("受众", combo.audience)}
+                      <span class="chip">已知搭配得分 ${escapeHtml(String(combo.pct))}%</span>
+                      ${hi("叙事", combo.narrative, nName0)}
+                      ${hi("链", combo.chain, cName0)}
+                      ${hi("受众", combo.audience, uName0)}
+                    </div>
+                  ` : `<div class="muted">未知：需要先对该【类型】做一次复盘，才会显示高匹配点。</div>`}
+                </div>
+                <div class="muted" style="margin-top:8px;">提示：会随你修改下拉选项实时刷新；如果已复盘，会标出“高匹配点”。</div>
+              </div>
+            </div>
+          `;
+          })()}
         `,
-        actions: [{ label: t(state, "modal.common.confirm"), kind: "primary", onClick: closeModal }],
+        actions: [
+          { label: "取消", onClick: closeModal },
+          { label: "查看泽娜已知搭配表", onClick: () => openKnownMatchTableModal(state) },
+          {
+            label: baseProd ? "二次开发并开始" : "立项并开始",
+            kind: "primary",
+            onClick: () => {
+              const selBase = /** @type {HTMLSelectElement|null} */ (document.getElementById("cp_baseProduct"));
+              const chosenBase = String(selBase?.value || "") || "";
+              if (chosenBase) {
+                const selUp = /** @type {HTMLSelectElement|null} */ (document.getElementById("cp_upgradeKey"));
+                const upgradeKey = String(selUp?.value || "") || "";
+                const cfg = { baseProductId: chosenBase, upgradeKey, scale: 1 };
+                const r = createProject(state, cfg);
+                if (!r.ok) {
+                  toast(r.msg);
+                  return;
+                }
+              } else {
+                const g = (id) => /** @type {HTMLSelectElement|null} */ (document.getElementById(id));
+                const cfg = {
+                  archetype: g("cp_archetype")?.value,
+                  narrative: g("cp_narrative")?.value,
+                  chain: g("cp_chain")?.value,
+                  audience: g("cp_audience")?.value,
+                  scale: parseInt(g("cp_scale")?.value || "1", 10) || 1,
+                };
+                const r = createProject(state, cfg);
+                if (!r.ok) {
+                  toast(r.msg);
+                  return;
+                }
+              }
+              closeModal();
+              save(state);
+              render(state);
+              switchTab("dashboard");
+            },
+          },
+        ],
+      });
+
+      // dynamic rerender when base product changes
+      const baseSel = document.getElementById("cp_baseProduct");
+      if (baseSel && baseSel instanceof HTMLSelectElement) {
+        baseSel.addEventListener("change", () => {
+          const v = String(baseSel.value || "") || null;
+          closeModal();
+          // reopen with selected base
+          handlers.onCreateProject?.(v);
+        }, { once: true });
+      }
+
+      if (!baseProd) {
+        const updateMatchInfo = () => {
+          const aSel = /** @type {HTMLSelectElement|null} */ (document.getElementById("cp_archetype"));
+          const nSel = /** @type {HTMLSelectElement|null} */ (document.getElementById("cp_narrative"));
+          const cSel = /** @type {HTMLSelectElement|null} */ (document.getElementById("cp_chain"));
+          const uSel = /** @type {HTMLSelectElement|null} */ (document.getElementById("cp_audience"));
+          const host = document.getElementById("cp_matchInfo");
+          if (!aSel || !nSel || !cSel || !uSel || !host) return;
+          const a2 = String(aSel.value || "");
+          const n2 = String(nSel.value || "");
+          const c2 = String(cSel.value || "");
+          const u2 = String(uSel.value || "");
+          const known2 = isZenaKnown(state, a2);
+          if (!known2) {
+            host.innerHTML = `<div class="muted">未知：需要先对【${escapeHtml(a2)}】类型做一次复盘。</div>`;
+            return;
+          }
+          const combo2 = knownComboBreakdown(a2, n2, c2, u2);
+          const chip2 = (label, it) => `<span class="chip chip--${escapeHtml(it.tone)}">${escapeHtml(label)}：${escapeHtml(it.label)}</span>`;
+          const hi = (label, it, pickedName) => (it.key === "perfect" ? `<span class="chip chip--good">高匹配：${escapeHtml(label)}=${escapeHtml(pickedName)}</span>` : "");
+          const nName = (NARRATIVES.find((x) => x.key === n2) || { name: n2 }).name;
+          const cName = (CHAINS.find((x) => x.key === c2) || { name: c2 }).name;
+          const uName = (AUDIENCES.find((x) => x.key === u2) || { name: u2 }).name;
+          host.innerHTML = `
+            <div class="chips" style="display:flex;gap:10px;flex-wrap:wrap;">
+              ${chip2("叙事", combo2.narrative)}
+              ${chip2("链", combo2.chain)}
+              ${chip2("受众", combo2.audience)}
+              <span class="chip">已知搭配得分 ${escapeHtml(String(combo2.pct))}%</span>
+              ${hi("叙事", combo2.narrative, nName)}
+              ${hi("链", combo2.chain, cName)}
+              ${hi("受众", combo2.audience, uName)}
+            </div>
+          `;
+        };
+        for (const id of ["cp_archetype", "cp_narrative", "cp_chain", "cp_audience"]) {
+          const el = document.getElementById(id);
+          if (el && el instanceof HTMLSelectElement) el.addEventListener("change", updateMatchInfo);
+        }
+        updateMatchInfo();
+      }
+    },
+    onResetGame: () => {
+      openModal({
+        title: "重置",
+        body: `<div><b>确定要重置并清空存档吗？</b></div><div class="muted" style="margin-top:8px;">这会删除本地存档。</div>`,
+        actions: [
+          { label: "取消", onClick: closeModal },
+          { label: "重置并重开", kind: "primary", onClick: restart },
+        ],
+      });
+    },
+    onClearLog: () => {
+      state.log = [];
+      render(state);
+    },
+    onExploreCandidates: () => {
+      const cash = Math.round(state.resources?.cash ?? 0);
+      const line = (name, costRange) => `${name}（¥${costRange}）`;
+      openModal({
+        title: "探索候选人",
+        body: `
+          <div class="muted">选择渠道获取新的候选人，候选人会加入“市场→候选人”列表（上限 8）。</div>
+          <div class="divider"></div>
+          <div class="muted">当前现金：¥${cash.toLocaleString("zh-CN")}</div>
+        `,
+        actions: [
+          { label: "取消", onClick: closeModal },
+          {
+            label: line("朋友介绍", "3,000~9,000"),
+            onClick: () => {
+              const r = exploreCandidates(state, "referral");
+              if (!r.ok) toast(r.msg);
+              else toast(`通过${r.sourceName}获得 ${r.addedCount} 位候选人（花费 ¥${r.cost.toLocaleString("zh-CN")}）。`);
+              closeModal();
+              save(state);
+              render(state);
+              switchTab("market");
+            },
+          },
+          {
+            label: line("招聘平台", "9,000~18,000"),
+            onClick: () => {
+              const r = exploreCandidates(state, "jobboard");
+              if (!r.ok) toast(r.msg);
+              else toast(`通过${r.sourceName}获得 ${r.addedCount} 位候选人（花费 ¥${r.cost.toLocaleString("zh-CN")}）。`);
+              closeModal();
+              save(state);
+              render(state);
+              switchTab("market");
+            },
+          },
+          {
+            label: line("猎头", "32,000~55,000"),
+            kind: "primary",
+            onClick: () => {
+              const r = exploreCandidates(state, "headhunter");
+              if (!r.ok) toast(r.msg);
+              else toast(`通过${r.sourceName}获得 ${r.addedCount} 位候选人（花费 ¥${r.cost.toLocaleString("zh-CN")}）。`);
+              closeModal();
+              save(state);
+              render(state);
+              switchTab("market");
+            },
+          },
+        ],
       });
     },
     onCloseModal: closeModal,
-    onLangChange: (lang) => {
-      setLang(state, lang);
-      render(state);
-    },
-    onAutoChange: (next) => {
-      normalizeState(state);
-      state.settings.auto = { ...state.settings.auto, ...next };
-      save(state);
-      if (state.settings.auto.enabled) startAuto();
-      else stopAuto();
-      render(state);
-    },
-    onHoursChange: (h) => {
-      normalizeState(state);
-      if (state.flags.gameOver) return;
-      if (state.ap.now < state.ap.max) {
-        toast(state, t(state, "ui.hours.locked"));
-        render(state);
-        return;
-      }
-      const next = clamp(h || 8, 6, 24);
-      const oldMax = state.ap.max;
-      state.schedule.hoursPerDay = next;
-      refreshAP(state);
-      const delta = state.ap.max - oldMax;
-      if (delta > 0) state.ap.now = clamp(state.ap.now + delta, 0, state.ap.max);
-      else state.ap.now = clamp(state.ap.now, 0, state.ap.max);
-      log(
-        state,
-        next > 8
-          ? t(state, "log.hours.set.overtime", { h: next })
-          : next < 8
-            ? t(state, "log.hours.set.chill", { h: next })
-            : t(state, "log.hours.set.normal")
-      );
-      render(state);
-    },
-    onSeasonChange: (weeks) => {
-      normalizeState(state);
-      if (state.flags.gameOver) return;
-      const sw = clamp(Math.round(weeks || 52), 8, 5200);
-      state.settings.seasonWeeks = [12, 24, 36, 52].includes(sw) ? sw : 52;
-      log(state, t(state, state.settings.lang === "en" ? "log.season.set" : "log.season.set", { weeks: state.settings.seasonWeeks }), "info");
-      save(state);
-      render(state);
-    },
   });
 
-  // 初始化可拖拽分隔条（布局可调宽度）
-  initResizableLayout();
-
   render(state);
-  switchTab("workbench");
+  switchTab("dashboard");
 
-  // 自动化：如果存档里已开启，启动
-  if (state.settings?.auto?.enabled) startAuto();
+  const tick = (ts) => {
+    normalizeState(state);
+    const last = state.time?.lastTs || ts;
+    const deltaSec = Math.max(0, (ts - last) / 1000);
+    if (state.time) state.time.lastTs = ts;
+    if (state.time && !state.time.paused && !state.flags.gameOver) {
+      // 加速手感：即便 x4 也要看得出“天”的变化
+      const BASE_HOURS_PER_SEC = 0.6;
+      const deltaHours = deltaSec * BASE_HOURS_PER_SEC * (state.time.speed || 1);
+      advanceTime(state, deltaHours);
+      checkGameOver(state, restart);
+      // Do NOT rerender every animation frame; it breaks interactions (inputs/buttons)
+      renderThrottled(ts);
+    }
+
+    // stage gate modal (project enters a new stage)
+    const modalEl = document.getElementById("modal");
+    const modalOpen = modalEl && !modalEl.classList.contains("is-hidden");
+    if (!modalOpen && Array.isArray(state.stageQueue) && state.stageQueue.length > 0) {
+      const next = state.stageQueue.shift();
+      if (next?.kind === "project" && next?.id) openStagePrefsModal(state, next.id);
+      save(state);
+    }
+
+    // delivery rating modal (after project/upgrade completion)
+    const modalOpen2 = modalEl && !modalEl.classList.contains("is-hidden");
+    const rq = state.ui?.ratingQueue;
+    if (!modalOpen2 && Array.isArray(rq) && rq.length > 0) {
+      const entry = rq.shift();
+      if (entry) {
+        openDeliveryRatingModal(state, entry);
+        save(state);
+      }
+    }
+
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 main();
