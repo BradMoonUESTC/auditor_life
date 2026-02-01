@@ -1,5 +1,5 @@
-import { clamp, pick, ri, rnd } from "./utils.js?v=62";
-import { clampPct, log, normalizeState } from "./state.js?v=62";
+import { clamp, pick, ri, rnd } from "./utils.js?v=63";
+import { clampPct, log, normalizeState } from "./state.js?v=63";
 
 // ===== Constants (MVP) =====
 
@@ -1196,8 +1196,9 @@ function makeLiveProduct(project, state) {
       supportBudgetWeekly: clamp(Math.round(state.ops?.supportBudgetWeekly ?? 0), 0, 999999999),
     },
     risk: {
-      security: clampPct(10 + (100 - scores.security) * 0.6),
-      compliance: clampPct(10 + (100 - scores.compliance) * 0.5),
+      // Risk should build up slowly over time (avoid early accidental "crisis").
+      security: clampPct(8 + (100 - scores.security) * 0.35),
+      compliance: clampPct(8 + (100 - scores.compliance) * 0.28),
     },
   };
 }
@@ -1860,8 +1861,9 @@ export function tickLiveProductsWeekly(state) {
     state.progress.earnedTotal = Math.round((state.progress.earnedTotal || 0) + Math.max(0, profit));
 
     // risk drift
-    prod.risk.security = clampPct((prod.risk.security || 10) + (100 - scores.security) * 0.02 + ri(-2, 3) - (ops.incentivesBudgetWeekly > 0 ? 1 : 0));
-    prod.risk.compliance = clampPct((prod.risk.compliance || 10) + (100 - scores.compliance) * 0.02 + ri(-2, 3) + (ops.emissions > 0.3 ? 2 : 0));
+    // Weekly drift should be mild; avoid pushing risks to 100 too fast.
+    prod.risk.security = clampPct((prod.risk.security || 10) + (100 - scores.security) * 0.008 + ri(-2, 2) - (ops.incentivesBudgetWeekly > 0 ? 0.4 : 0));
+    prod.risk.compliance = clampPct((prod.risk.compliance || 10) + (100 - scores.compliance) * 0.008 + ri(-2, 2) + (ops.emissions > 0.3 ? 0.6 : 0));
   }
 }
 
@@ -2005,8 +2007,9 @@ export function tickLiveProductsDaily(state) {
     // risk drift daily (milder)
     const secSpendRiskCut = clamp((ops.securityBudgetWeekly || 0) / 260000, 0, 1.4) * 0.35;
     const compSpendRiskCut = clamp((ops.complianceBudgetWeekly || 0) / 260000, 0, 1.2) * 0.30;
-    prod.risk.security = clampPct((prod.risk.security || 10) + (100 - scores.security) * 0.004 + ri(-1, 2) - (ops.incentivesBudgetWeekly > 0 ? 0.3 : 0) - secSpendRiskCut);
-    prod.risk.compliance = clampPct((prod.risk.compliance || 10) + (100 - scores.compliance) * 0.004 + ri(-1, 2) + (ops.emissions > 0.3 ? 0.6 : 0) - compSpendRiskCut);
+    // Make risk growth very slow; rely on rare shocks + player neglect to create crises.
+    prod.risk.security = clampPct((prod.risk.security || 10) + (100 - scores.security) * 0.0015 + ri(-1, 1) - (ops.incentivesBudgetWeekly > 0 ? 0.12 : 0) - secSpendRiskCut);
+    prod.risk.compliance = clampPct((prod.risk.compliance || 10) + (100 - scores.compliance) * 0.0015 + ri(-1, 1) + (ops.emissions > 0.3 ? 0.18 : 0) - compSpendRiskCut);
 
     // token price (daily) - responds to ops params + fundamentals
     const token0 = typeof k.tokenPrice === "number" ? k.tokenPrice : 1;
@@ -2053,11 +2056,13 @@ export function tickDay(state) {
   if (products.length > 0) {
     const avgSec = products.reduce((a, p) => a + clampPct(p.risk?.security ?? 0), 0) / products.length;
     const avgComp = products.reduce((a, p) => a + clampPct(p.risk?.compliance ?? 0), 0) / products.length;
-    state.resources.securityRisk = clampPct((state.resources.securityRisk || 0) * 0.82 + avgSec * 0.18 + ri(-1, 2));
-    state.resources.complianceRisk = clampPct((state.resources.complianceRisk || 0) * 0.82 + avgComp * 0.18 + ri(-1, 2));
+    // Pull global risk towards product risk slowly.
+    state.resources.securityRisk = clampPct((state.resources.securityRisk || 0) * 0.92 + avgSec * 0.08 + ri(-2, 1));
+    state.resources.complianceRisk = clampPct((state.resources.complianceRisk || 0) * 0.92 + avgComp * 0.08 + ri(-2, 1));
   } else {
-    state.resources.securityRisk = clampPct((state.resources.securityRisk || 0) + ri(-2, 1));
-    state.resources.complianceRisk = clampPct((state.resources.complianceRisk || 0) + ri(-2, 1));
+    // No products => risks should naturally cool down.
+    state.resources.securityRisk = clampPct((state.resources.securityRisk || 0) + ri(-3, 0));
+    state.resources.complianceRisk = clampPct((state.resources.complianceRisk || 0) + ri(-3, 0));
   }
 
   // light daily noise so charts move even early game

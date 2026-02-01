@@ -1,9 +1,9 @@
-import { clamp, escapeHtml } from "./utils.js?v=62";
-import { load, resetStorage, save } from "./storage.js?v=62";
-import { defaultState, log, normalizeState, weekLabel } from "./state.js?v=62";
-import { closeModal, openModal, toast } from "./modal.js?v=62";
-import { bind, render, switchTab } from "./ui.js?v=62";
-import { ARCHETYPES, AUDIENCES, CHAINS, KNOWN_MATCH_TABLE, MATCH_LEVEL, NARRATIVES, PLATFORMS, RECIPE, RESEARCH_TREE, STAGE_DIMS, ZENA_RECIPE_UNLOCK_MATCH_PCT, abandonLiveProduct, abandonProject, applyInboxChoice, autoAssignProjectStageTeam, createProject, ensureSelection, exploreCandidates, findTarget, hire, knownComboBreakdown, projectStage, seedMarket, setProjectTeam, setResearchAssignee, startProject, startResearch, startResearchNode, tickDay, tickProjects, tickResearch, tickWeek, upgradeOptionsForProduct } from "./logic.js?v=62";
+import { clamp, escapeHtml } from "./utils.js?v=63";
+import { load, resetStorage, save } from "./storage.js?v=63";
+import { defaultState, log, normalizeState, weekLabel } from "./state.js?v=63";
+import { closeModal, openModal, toast } from "./modal.js?v=63";
+import { bind, render, switchTab } from "./ui.js?v=63";
+import { ARCHETYPES, AUDIENCES, CHAINS, KNOWN_MATCH_TABLE, MATCH_LEVEL, NARRATIVES, PLATFORMS, RECIPE, RESEARCH_TREE, STAGE_DIMS, ZENA_RECIPE_UNLOCK_MATCH_PCT, abandonLiveProduct, abandonProject, applyInboxChoice, autoAssignProjectStageTeam, createProject, ensureSelection, exploreCandidates, findTarget, hire, knownComboBreakdown, projectStage, seedMarket, setProjectTeam, setResearchAssignee, startProject, startResearch, startResearchNode, tickDay, tickProjects, tickResearch, tickWeek, upgradeOptionsForProduct } from "./logic.js?v=63";
 
 function initNewState() {
   const s = normalizeState(defaultState());

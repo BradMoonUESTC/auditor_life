@@ -1,5 +1,5 @@
-import { $ } from "./dom.js?v=62";
-import { escapeHtml } from "./utils.js?v=62";
+import { $ } from "./dom.js?v=63";
+import { escapeHtml } from "./utils.js?v=63";
 
 export function openModal({ title, body, actions, wide = false }) {
   const modalEl = $("#modal");

@@ -1,7 +1,7 @@
-import { $, $$ } from "./dom.js?v=62";
-import { clamp, escapeHtml, money } from "./utils.js?v=62";
-import { normalizeState, weekLabel } from "./state.js?v=62";
-import { ARCHETYPES, AUDIENCES, CHAINS, INBOX_DEFS, NARRATIVES, PLATFORMS, RESEARCH_TREE, ensureSelection, estimateDailyCashDelta, findTarget, projectProductScore, projectStage, projectTechScore, researchNodeStatus } from "./logic.js?v=62";
+import { $, $$ } from "./dom.js?v=63";
+import { clamp, escapeHtml, money } from "./utils.js?v=63";
+import { normalizeState, weekLabel } from "./state.js?v=63";
+import { ARCHETYPES, AUDIENCES, CHAINS, INBOX_DEFS, NARRATIVES, PLATFORMS, RESEARCH_TREE, ensureSelection, estimateDailyCashDelta, findTarget, projectProductScore, projectStage, projectTechScore, researchNodeStatus } from "./logic.js?v=63";
 
 export function switchTab(tabKey) {
   for (const btn of $$(".tab")) {
