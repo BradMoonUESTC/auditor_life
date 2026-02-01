@@ -1,9 +1,9 @@
-import { clamp, escapeHtml } from "./utils.js?v=57";
-import { load, resetStorage, save } from "./storage.js?v=57";
-import { defaultState, log, normalizeState, weekLabel } from "./state.js?v=57";
-import { closeModal, openModal, toast } from "./modal.js?v=57";
-import { bind, render, switchTab } from "./ui.js?v=57";
-import { ARCHETYPES, AUDIENCES, CHAINS, KNOWN_MATCH_TABLE, MATCH_LEVEL, NARRATIVES, PLATFORMS, RESEARCH_TREE, STAGE_DIMS, abandonProject, applyInboxChoice, autoAssignProjectStageTeam, createProject, ensureSelection, exploreCandidates, findTarget, hire, knownComboBreakdown, projectStage, seedMarket, setProjectTeam, setResearchAssignee, startProject, startResearch, startResearchNode, tickDay, tickProjects, tickResearch, tickWeek, upgradeOptionsForProduct } from "./logic.js?v=57";
+import { clamp, escapeHtml } from "./utils.js?v=62";
+import { load, resetStorage, save } from "./storage.js?v=62";
+import { defaultState, log, normalizeState, weekLabel } from "./state.js?v=62";
+import { closeModal, openModal, toast } from "./modal.js?v=62";
+import { bind, render, switchTab } from "./ui.js?v=62";
+import { ARCHETYPES, AUDIENCES, CHAINS, KNOWN_MATCH_TABLE, MATCH_LEVEL, NARRATIVES, PLATFORMS, RECIPE, RESEARCH_TREE, STAGE_DIMS, ZENA_RECIPE_UNLOCK_MATCH_PCT, abandonLiveProduct, abandonProject, applyInboxChoice, autoAssignProjectStageTeam, createProject, ensureSelection, exploreCandidates, findTarget, hire, knownComboBreakdown, projectStage, seedMarket, setProjectTeam, setResearchAssignee, startProject, startResearch, startResearchNode, tickDay, tickProjects, tickResearch, tickWeek, upgradeOptionsForProduct } from "./logic.js?v=62";
 
 function initNewState() {
   const s = normalizeState(defaultState());
@@ -375,51 +375,45 @@ function checkGameOver(state, restart) {
     });
   }
   if ((state.resources?.complianceRisk ?? 0) >= 100) {
-    state.flags.gameOver = { kind: "lose", title: "监管介入", reason: "合规风险爆表：渠道下架与资金冻结让你被迫停业。" };
-    log(state, `【监管介入】合规风险爆表：渠道下架与资金冻结让你被迫停业。`, "bad");
-    openModal({
-      title: "监管介入",
-      body: `<div>${escapeHtml("合规风险爆表：渠道下架与资金冻结让你被迫停业。")}</div>`,
-      actions: [
-        { label: "关闭", onClick: closeModal },
-        { label: "重开", kind: "primary", onClick: restart },
-      ],
-    });
+    const dayIndex = Math.floor((state.time?.elapsedHours || 0) / 8);
+    if (dayIndex >= (state.flags.complianceCrisisNextAtDay || 0)) {
+      state.flags.complianceCrisisNextAtDay = dayIndex + 14; // 2-week cooldown
+      const cash = Math.max(0, Math.round(state.resources?.cash || 0));
+      const loss = Math.round(cash * 0.5);
+      state.resources.cash = Math.round(cash - loss);
+      // pull back from 100 to avoid instant retrigger
+      state.resources.complianceRisk = 72;
+      log(state, `【合规风暴】合规风险爆表触发监管风波：现金 -¥${loss.toLocaleString("zh-CN")}（可继续经营）。`, "bad");
+      openModal({
+        title: "合规风暴（可继续）",
+        body: `
+          <div>${escapeHtml("合规风险爆表：触发监管风波，资金被冻结/罚没一部分，但你仍可继续经营（需要尽快降低合规风险）。")}</div>
+          <div class="divider"></div>
+          <div class="muted">处罚：现金 -¥${escapeHtml(loss.toLocaleString("zh-CN"))}（扣除 50% 现金）</div>
+          <div class="muted" style="margin-top:8px;">冷却：14 天内不会重复触发同类事件。</div>
+        `,
+        actions: [{ label: "继续经营", kind: "primary", onClick: closeModal }],
+      });
+    }
   }
   if ((state.resources?.securityRisk ?? 0) >= 100) {
     const dayIndex = Math.floor((state.time?.elapsedHours || 0) / 8);
     if (dayIndex < (state.flags.securityCrisisNextAtDay || 0)) return;
     state.flags.securityCrisisNextAtDay = dayIndex + 14; // 2-week cooldown
 
-    // Apply punishments but allow continue
     const cash = Math.max(0, Math.round(state.resources?.cash || 0));
-    const loss = Math.round(Math.min(280_000, Math.max(60_000, cash * 0.18)));
-    state.resources.cash = Math.round((state.resources.cash || 0) - loss);
-    state.resources.reputation = clamp(Math.round((state.resources.reputation || 0) - 12), 0, 100);
-    state.resources.community = clamp(Math.round((state.resources.community || 0) - 6), 0, 100);
-    state.resources.fans = clamp(Math.round((state.resources.fans || 0) * 0.94), 0, 999999999);
-
-    // Hit live products: user drop + price crash; pull risks back from 100 to avoid chain triggers
-    for (const prod of state.active?.products || []) {
-      if (prod?.kpi) {
-        prod.kpi.users = Math.round(Math.max(0, (prod.kpi.users || 0) * 0.93));
-        prod.kpi.dau = Math.round(Math.max(0, (prod.kpi.dau || 0) * 0.90));
-        if (typeof prod.kpi.tokenPrice === "number") prod.kpi.tokenPrice = Math.max(0.01, prod.kpi.tokenPrice * (0.78 + Math.random() * 0.08));
-      }
-      if (prod?.risk) {
-        prod.risk.security = clamp(Math.round((prod.risk.security || 10) + 12), 0, 100);
-      }
-    }
-
+    const loss = Math.round(cash * 0.5);
+    state.resources.cash = Math.round(cash - loss);
+    // pull back from 100 to avoid instant retrigger
     state.resources.securityRisk = 72;
-    log(state, `【重大安全事故】安全风险爆表触发事故：现金 -¥${loss.toLocaleString("zh-CN")}，声誉下降，用户与币价受挫（可继续经营）。`, "bad");
+    log(state, `【重大安全事故】安全风险爆表触发事故：现金 -¥${loss.toLocaleString("zh-CN")}（可继续经营）。`, "bad");
     openModal({
       title: "重大安全事故（可继续）",
       body: `
-        <div>${escapeHtml("安全风险爆表：发生重大事故，声誉与现金流受挫，但你仍可继续经营（需要尽快降低风险）。")}</div>
+        <div>${escapeHtml("安全风险爆表：发生重大事故，现金流受挫，但你仍可继续经营（需要尽快降低安全风险）。")}</div>
         <div class="divider"></div>
-        <div class="muted">处罚：现金 -¥${escapeHtml(loss.toLocaleString("zh-CN"))} · 声誉 -12 · 社区 -6 · 粉丝 -6% · 主要产品用户/币价下滑</div>
-        <div class="muted" style="margin-top:8px;">冷却：14 天内不会重复触发同类事故（避免连环弹窗）。</div>
+        <div class="muted">处罚：现金 -¥${escapeHtml(loss.toLocaleString("zh-CN"))}（扣除 50% 现金）</div>
+        <div class="muted" style="margin-top:8px;">冷却：14 天内不会重复触发同类事件。</div>
       `,
       actions: [{ label: "继续经营", kind: "primary", onClick: closeModal }],
     });
@@ -435,6 +429,16 @@ function main() {
     if (ts - lastUiRenderAt < RENDER_INTERVAL_MS) return;
     lastUiRenderAt = ts;
     render(state);
+  };
+  // Coalesce manual renders (e.g. slider input) to 1 per frame.
+  let pendingRender = false;
+  const renderSoon = () => {
+    if (pendingRender) return;
+    pendingRender = true;
+    requestAnimationFrame(() => {
+      pendingRender = false;
+      render(state);
+    });
   };
 
   const refreshDevApi = () => {
@@ -552,14 +556,24 @@ function main() {
     onPostmortem: (productId) => {
       const prod = findTarget(state, "product", productId);
       if (!prod) return;
+      const done = Array.isArray(state.knowledge?.postmortemedProductIds) ? state.knowledge.postmortemedProductIds : [];
+      if (done.includes(String(productId || ""))) {
+        toast("该产品已复盘过（同一对象只能复盘一次）。");
+        return;
+      }
+      const match = clamp(Math.round(prod?.scores?.match ?? 0), 0, 100);
+      const archetype = String(prod.archetype || "");
+      const alreadyKnown = archetype && Array.isArray(state.knowledge?.zenaKnownArchetypes) && state.knowledge.zenaKnownArchetypes.includes(archetype);
       const members = state.team?.members || [];
       const options =
         `<option value="">（未指派）</option>` +
         members.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join("");
       openModal({
-        title: "泽娜复盘（解锁已知搭配）",
+        title: "泽娜复盘（解锁配方表）",
         body: `
-          <div class="muted">复盘对象：${escapeHtml(prod.title || prod.id)}（类型 ${escapeHtml(String(prod.archetype || ""))}）。完成后会解锁该类型的泽娜已知搭配表。</div>
+          <div class="muted">复盘对象：${escapeHtml(prod.title || prod.id)}（类型 ${escapeHtml(String(prod.archetype || ""))}）。</div>
+          <div class="muted" style="margin-top:8px;">当前匹配度：<b>${match}</b>。只有<b>高匹配（≥${ZENA_RECIPE_UNLOCK_MATCH_PCT}）</b>复盘后才会解锁该类型的“配方表”。</div>
+          ${alreadyKnown ? `<div class="muted" style="margin-top:8px;">该类型配方表已解锁：本次复盘只会记录“已复盘”。</div>` : ``}
           <div style="margin-top:12px;">
             <div class="muted" style="margin-bottom:6px;">指派负责人</div>
             <select class="select" id="pmAssignee2">${options}</select>
@@ -604,6 +618,16 @@ function main() {
       const fansAll = Math.round(Number(state.resources?.fans) || 0);
       const known = isZenaKnown(state, d.archetype);
       const qualityLine = known ? `质量 ${clamp(Math.round(1 + clamp(Math.round(d.matchPct || 0), 0, 100) / 100 * 9), 1, 10)}/10` : "质量：未知（需复盘）";
+      const pScore = Number.isFinite(Number(d.productScore))
+        ? Math.round(Number(d.productScore))
+        : Number.isFinite(Number(d.productScore10))
+          ? Math.round(Number(d.productScore10))
+          : 0;
+      const tScore = Number.isFinite(Number(d.techScore))
+        ? Math.round(Number(d.techScore))
+        : Number.isFinite(Number(d.techScore10))
+          ? Math.round(Number(d.techScore10))
+          : 0;
 
       const stageDims = {
         S1: [
@@ -628,7 +652,64 @@ function main() {
         const dims = stageDims[stageKey] || [];
         const pv = prefs?.[stageKey] || {};
         const tv = team?.[stageKey] || {};
-        const rows = dims
+        const prefRows = dims
+          .map((it) => {
+            const v = clamp(Math.round(pv?.[it.key] ?? 50), 0, 100);
+            const side = v === 50 ? "平衡" : v > 50 ? it.right : it.left;
+            const intensity = Math.abs(v - 50);
+            const pri = intensity >= 30 ? "高" : intensity >= 15 ? "中" : "低";
+            return { it, v, side, pri, intensity };
+          })
+          .sort((a, b) => b.intensity - a.intensity);
+        const topPrefs = prefRows.slice(0, 2);
+
+        const chip = (text, tone = "") => {
+          const cls = tone ? `chip chip--${tone}` : "chip";
+          return `<span class="${cls}">${escapeHtml(text)}</span>`;
+        };
+
+        const recipeMatch = (() => {
+          // 只有复盘解锁该类型配方表后，才显示“配方优先级是否高匹配”
+          if (!known) return { pct: null, level: "unknown" };
+          const archetypeKey = String(d.archetype || "");
+          const recipe = RECIPE?.[archetypeKey]?.[stageKey] || {};
+          if (!dims.length) return { pct: 0, level: "bad" };
+          const avgDist =
+            dims.reduce((acc, it) => {
+              const target = clamp(Math.round(recipe?.[it.key] ?? 50), 0, 100);
+              const cur = clamp(Math.round(pv?.[it.key] ?? 50), 0, 100);
+              return acc + Math.abs(cur - target);
+            }, 0) / dims.length;
+          const pct = clamp(Math.round(100 - avgDist), 0, 100);
+          const level = pct >= 85 ? "good" : pct >= 65 ? "mid" : "bad";
+          return { pct, level };
+        })();
+
+        const matchChip =
+          recipeMatch.level === "unknown"
+            ? chip("配方匹配：未知（需复盘）", "warn")
+            : recipeMatch.level === "good"
+              ? chip(`配方匹配：高（${recipeMatch.pct}%）`, "good")
+              : recipeMatch.level === "mid"
+                ? chip(`配方匹配：中（${recipeMatch.pct}%）`, "warn")
+                : chip(`配方匹配：低（${recipeMatch.pct}%）`, "bad");
+
+        const prefChips = topPrefs.length
+          ? topPrefs
+              .map((x) => chip(`${x.side}（${x.pri}·${x.v}）`))
+              .join("")
+          : `<span class="muted">未记录。</span>`;
+
+        const roleChips = Object.entries(tv || {})
+          .map(([role, mid]) => {
+            const m = (state.team?.members || []).find((x) => x.id === mid);
+            const who = m?.name || "（空）";
+            return chip(`${role}：${who}`);
+          })
+          .join("");
+
+        // 默认折叠，避免弹窗出现滚动条；需要时再展开看完整细节
+        const fullPrefRows = dims
           .map((it) => {
             const v = clamp(Math.round(pv?.[it.key] ?? 50), 0, 100);
             const side = v === 50 ? "平衡" : v > 50 ? it.right : it.left;
@@ -637,23 +718,29 @@ function main() {
             return `<div class="statRow"><div class="statRow__k">${escapeHtml(it.left)} ↔ ${escapeHtml(it.right)}</div><div class="statRow__v">${escapeHtml(`${side}（${pri}·${v}）`)}</div></div>`;
           })
           .join("");
-        const roleLines = Object.entries(tv || {})
+        const fullRoleLines = Object.entries(tv || {})
           .map(([role, mid]) => {
             const m = (state.team?.members || []).find((x) => x.id === mid);
             return `<div class="statRow"><div class="statRow__k">${escapeHtml(role)}</div><div class="statRow__v">${escapeHtml(m?.name || "（空）")}</div></div>`;
           })
           .join("");
+
         return `
-          <div class="item" style="margin-top:12px;">
-            <div class="item__top"><div class="item__title">阶段 ${escapeHtml(stageKey)}</div></div>
-            <div class="item__body">
-              <div class="subhead">配方选择 / 优先级</div>
-              <div class="memberCard__stats">${rows || `<div class="muted">未记录。</div>`}</div>
+          <details style="margin-top:10px;">
+            <summary class="muted" style="cursor:pointer; user-select:none;">
+              阶段 ${escapeHtml(stageKey)} · 配方 ${escapeHtml(topPrefs.map((x) => x.side).join(" / ") || "—")} · 团队 ${escapeHtml(Object.keys(tv || {}).length ? `${Object.keys(tv || {}).length} 角色` : "—")}
+            </summary>
+            <div style="margin-top:8px;">
+              <div class="chips" style="display:flex;gap:8px;flex-wrap:wrap;">${matchChip}</div>
+              <div class="chips" style="display:flex;gap:8px;flex-wrap:wrap;">${prefChips}</div>
+              <div class="chips" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">${roleChips || `<span class="muted">未记录。</span>`}</div>
               <div class="divider"></div>
-              <div class="subhead">团队分工</div>
-              <div class="memberCard__stats">${roleLines || `<div class="muted">未记录。</div>`}</div>
+              <div class="subhead">完整记录</div>
+              <div class="memberCard__stats">${fullPrefRows || `<div class="muted">未记录。</div>`}</div>
+              <div class="divider"></div>
+              <div class="memberCard__stats">${fullRoleLines || `<div class="muted">未记录。</div>`}</div>
             </div>
-          </div>
+          </details>
         `;
       };
 
@@ -666,41 +753,35 @@ function main() {
               <div>
                 <div class="item__title">${escapeHtml(d.title || "（未命名）")}</div>
                 <div class="muted" style="margin-top:6px;">
-                  评分 ${escapeHtml(String(Number(d.avgRating10 || 0).toFixed(1)))} / 10 · 产品分 ${escapeHtml(String(d.productScore10 || 0))}/10 · 技术分 ${escapeHtml(String(d.techScore10 || 0))}/10 · ${escapeHtml(qualityLine)}
+                  评分 ${escapeHtml(String(Number(d.avgRating10 || 0).toFixed(1)))} / 10 · 产品分 ${escapeHtml(pScore.toLocaleString("zh-CN"))} · 技术分 ${escapeHtml(tScore.toLocaleString("zh-CN"))} · ${escapeHtml(qualityLine)}
                 </div>
               </div>
             </div>
             <div class="item__body">
-              <div class="kvs">
-                <div class="kv"><div class="kv__k">题材/叙事</div><div class="kv__v">${escapeHtml((NARRATIVES.find((x) => x.key === d.narrative) || { name: d.narrative }).name)}</div></div>
-                <div class="kv"><div class="kv__k">类型</div><div class="kv__v">${escapeHtml((ARCHETYPES.find((x) => x.key === d.archetype) || { name: d.archetype }).name)}</div></div>
-                <div class="kv"><div class="kv__k">链</div><div class="kv__v">${escapeHtml((CHAINS.find((x) => x.key === d.chain) || { name: d.chain }).name)}</div></div>
-                <div class="kv"><div class="kv__k">受众</div><div class="kv__v">${escapeHtml((AUDIENCES.find((x) => x.key === d.audience) || { name: d.audience }).name)}</div></div>
-                <div class="kv"><div class="kv__k">平台</div><div class="kv__v">${escapeHtml(pf)}</div></div>
-                <div class="kv"><div class="kv__k">项目大小</div><div class="kv__v">L${escapeHtml(String(d.scale || 1))}</div></div>
-                <div class="kv"><div class="kv__k">成本</div><div class="kv__v">${escapeHtml(`¥${cost.toLocaleString("zh-CN")}`)}</div></div>
-                <div class="kv"><div class="kv__k">获得粉丝</div><div class="kv__v">+${escapeHtml(fansG.toLocaleString("zh-CN"))}（当前总粉丝 ${escapeHtml(fansAll.toLocaleString("zh-CN"))}）</div></div>
+              <div class="chips" style="display:flex;gap:8px;flex-wrap:wrap;">
+                <span class="chip">${escapeHtml((NARRATIVES.find((x) => x.key === d.narrative) || { name: d.narrative }).name)}</span>
+                <span class="chip">${escapeHtml((ARCHETYPES.find((x) => x.key === d.archetype) || { name: d.archetype }).name)}</span>
+                <span class="chip">${escapeHtml((CHAINS.find((x) => x.key === d.chain) || { name: d.chain }).name)}</span>
+                <span class="chip">${escapeHtml((AUDIENCES.find((x) => x.key === d.audience) || { name: d.audience }).name)}</span>
+                <span class="chip">${escapeHtml(pf)}</span>
+                <span class="chip">L${escapeHtml(String(d.scale || 1))}</span>
+                <span class="chip">成本 ¥${escapeHtml(cost.toLocaleString("zh-CN"))}</span>
+                <span class="chip">粉丝 +${escapeHtml(fansG.toLocaleString("zh-CN"))}</span>
               </div>
             </div>
           </div>
           ${prod ? `
-            <div class="item" style="margin-top:12px;">
-              <div class="item__top">
-                <div class="item__title">产品现状</div>
-                <div class="chips">${tokenPrice ? `<span class="chip">币价 $${escapeHtml(tokenPrice.toFixed(2))}</span>` : ""}</div>
+            <details style="margin-top:10px;">
+              <summary class="muted" style="cursor:pointer; user-select:none;">产品现状 · 用户 ${escapeHtml(users.toLocaleString("zh-CN"))} · DAU ${escapeHtml(dau.toLocaleString("zh-CN"))} · 累计利润 ¥${escapeHtml(earned.toLocaleString("zh-CN"))}</summary>
+              <div class="chips" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+                ${tokenPrice ? `<span class="chip">币价 $${escapeHtml(tokenPrice.toFixed(2))}</span>` : ""}
+                <span class="chip">用户 ${escapeHtml(users.toLocaleString("zh-CN"))}</span>
+                <span class="chip">DAU ${escapeHtml(dau.toLocaleString("zh-CN"))}</span>
+                <span class="chip">累计收入 ¥${escapeHtml(rev.toLocaleString("zh-CN"))}</span>
+                <span class="chip">累计利润 ¥${escapeHtml(earned.toLocaleString("zh-CN"))}</span>
               </div>
-              <div class="item__body">
-                <div class="kvs">
-                  <div class="kv"><div class="kv__k">用户</div><div class="kv__v">${escapeHtml(users.toLocaleString("zh-CN"))}</div></div>
-                  <div class="kv"><div class="kv__k">DAU</div><div class="kv__v">${escapeHtml(dau.toLocaleString("zh-CN"))}</div></div>
-                  <div class="kv"><div class="kv__k">累计收入</div><div class="kv__v">¥${escapeHtml(rev.toLocaleString("zh-CN"))}</div></div>
-                  <div class="kv"><div class="kv__k">累计利润</div><div class="kv__v">¥${escapeHtml(earned.toLocaleString("zh-CN"))}</div></div>
-                </div>
-              </div>
-            </div>
-          ` : `
-            <div class="muted" style="margin-top:12px;">提示：该条目对应的产品当前未找到（可能是旧存档数据或尚未生成）。</div>
-          `}
+            </details>
+          ` : `<div class="muted" style="margin-top:10px;">提示：对应产品未找到（旧存档或尚未生成）。</div>`}
           ${stageBlock("S1")}
           ${stageBlock("S2")}
           ${stageBlock("S3")}
@@ -711,38 +792,101 @@ function main() {
       });
     },
     onAbandon: (kind, id) => {
-      if (kind !== "project") return;
-      const p = findTarget(state, "project", id);
-      if (!p) return;
-      openModal({
-        title: "废弃项目",
-        body: `
-          <div class="muted">确认要废弃该项目吗？废弃后会从进行中列表移除，并清除待配置队列（不会返还已消耗的现金）。</div>
-          <div class="divider"></div>
-          <div class="item">
-            <div class="item__top">
-              <div>
-                <div class="item__title">${escapeHtml(p.title || "")}</div>
-                <div class="muted" style="margin-top:6px;">当前阶段 ${escapeHtml(projectStage(p))} · 进度 ${clamp(Math.round(p.stageProgress || 0), 0, 100)}%</div>
+      if (kind === "project") {
+        const p = findTarget(state, "project", id);
+        if (!p) return;
+        openModal({
+          title: "废弃项目",
+          body: `
+            <div class="muted">确认要废弃该项目吗？废弃后会从进行中列表移除，并清除待配置队列（不会返还已消耗的现金）。</div>
+            <div class="divider"></div>
+            <div class="item">
+              <div class="item__top">
+                <div>
+                  <div class="item__title">${escapeHtml(p.title || "")}</div>
+                  <div class="muted" style="margin-top:6px;">当前阶段 ${escapeHtml(projectStage(p))} · 进度 ${clamp(Math.round(p.stageProgress || 0), 0, 100)}%</div>
+                </div>
               </div>
             </div>
-          </div>
-        `,
-        actions: [
-          { label: "取消", onClick: closeModal },
-          {
-            label: "确认废弃",
-            kind: "primary",
-            onClick: () => {
-              const r = abandonProject(state, id);
-              if (!r.ok) toast(r.msg);
-              closeModal();
-              save(state);
-              render(state);
+          `,
+          actions: [
+            { label: "取消", onClick: closeModal },
+            {
+              label: "确认废弃",
+              kind: "primary",
+              onClick: () => {
+                const r = abandonProject(state, id);
+                if (!r.ok) toast(r.msg);
+                closeModal();
+                save(state);
+                render(state);
+              },
             },
-          },
-        ],
-      });
+          ],
+        });
+        return;
+      }
+
+      if (kind === "product") {
+        const prod = findTarget(state, "product", id);
+        if (!prod) return;
+        const k = prod.kpi || {};
+        const tvl = Math.round(Number(k.tvl) || 0);
+        const dau = Math.round(Number(k.dau) || 0);
+        const profit = Math.round(Number(k.profit) || 0);
+        const price = Number(k.tokenPrice) || 0;
+        openModal({
+          title: "废弃已上线产品",
+          body: `
+            <div class="muted">你可以选择“逐渐废弃”（温和下线）或“Rug Pull”（一次性收割/跑路）。Rug Pull 会对粉丝、声誉、社区、风险等造成严重伤害。</div>
+            <div class="divider"></div>
+            <div class="item">
+              <div class="item__top">
+                <div>
+                  <div class="item__title">${escapeHtml(prod.title || prod.id)}</div>
+                  <div class="muted" style="margin-top:6px;">币价 $${escapeHtml(price.toFixed(2))} · DAU ${escapeHtml(dau.toLocaleString("zh-CN"))} · TVL ${escapeHtml(tvl.toLocaleString("zh-CN"))} · 日利润 ¥${escapeHtml(profit.toLocaleString("zh-CN"))}</div>
+                </div>
+              </div>
+            </div>
+            <div class="divider"></div>
+            <div class="subhead">Rug Pull 二次确认</div>
+            <div class="muted">为避免误触：如果你要 Rug Pull，请在下面输入 <b>RUG</b>。</div>
+            <input class="input" id="rugConfirm" placeholder="输入 RUG" style="margin-top:8px; width: 180px;" />
+          `,
+          actions: [
+            { label: "取消", onClick: closeModal },
+            {
+              label: "逐渐废弃",
+              onClick: () => {
+                const r = abandonLiveProduct(state, id, "sunset");
+                if (!r.ok) toast(r.msg);
+                else toast("已逐渐废弃该产品。");
+                closeModal();
+                save(state);
+                render(state);
+              },
+            },
+            {
+              label: "Rug Pull",
+              kind: "primary",
+              onClick: () => {
+                const el = /** @type {HTMLInputElement|null} */ (document.getElementById("rugConfirm"));
+                const v = String(el?.value || "").trim().toUpperCase();
+                if (v !== "RUG") {
+                  toast("请输入 RUG 以确认 Rug Pull。");
+                  return;
+                }
+                const r = abandonLiveProduct(state, id, "rug");
+                if (!r.ok) toast(r.msg);
+                else toast("已执行 Rug Pull（声誉/粉丝受到严重伤害）。");
+                closeModal();
+                save(state);
+                render(state);
+              },
+            },
+          ],
+        });
+      }
     },
     onStagePrefChange: (stage, key, val) => {
       ensureSelection(state);
@@ -752,7 +896,7 @@ function main() {
       if (!p.stagePrefs) p.stagePrefs = {};
       if (!p.stagePrefs[stage]) p.stagePrefs[stage] = {};
       p.stagePrefs[stage][key] = clamp(Math.round(val || 0), 0, 100);
-      render(state);
+      renderSoon();
     },
     onOpsChange: (k, productId, rawVal) => {
       const p = findTarget(state, "product", productId);
@@ -771,7 +915,25 @@ function main() {
       if (k === "incentivesBudgetWeekly") {
         p.ops.incentivesBudgetWeekly = clamp(Math.round(parseFloat(String(rawVal || "0")) || 0), 0, 999999999);
       }
-      render(state);
+      if (k === "marketingBudgetWeekly") {
+        p.ops.marketingBudgetWeekly = clamp(Math.round(parseFloat(String(rawVal || "0")) || 0), 0, 999999999);
+      }
+      if (k === "securityBudgetWeekly") {
+        p.ops.securityBudgetWeekly = clamp(Math.round(parseFloat(String(rawVal || "0")) || 0), 0, 999999999);
+      }
+      if (k === "infraBudgetWeekly") {
+        p.ops.infraBudgetWeekly = clamp(Math.round(parseFloat(String(rawVal || "0")) || 0), 0, 999999999);
+      }
+      if (k === "complianceBudgetWeekly") {
+        p.ops.complianceBudgetWeekly = clamp(Math.round(parseFloat(String(rawVal || "0")) || 0), 0, 999999999);
+      }
+      if (k === "supportBudgetWeekly") {
+        p.ops.supportBudgetWeekly = clamp(Math.round(parseFloat(String(rawVal || "0")) || 0), 0, 999999999);
+      }
+      if (k === "referralPct") {
+        p.ops.referralPct = clamp((parseFloat(String(rawVal || "0")) || 0) / 100, 0, 0.3);
+      }
+      renderSoon();
     },
     onAssign: (projectId, stageKey, roleKey, memberIdOrNull) => {
       setProjectTeam(state, projectId, stageKey, roleKey, memberIdOrNull);
@@ -799,13 +961,21 @@ function main() {
         const n = (RESEARCH_TREE?.nodes || []).find((x) => x.id === nodeId) || null;
         if (n?.kind === "postmortem") {
           const prods = state.active?.products || [];
+        const done = Array.isArray(state.knowledge?.postmortemedProductIds) ? state.knowledge.postmortemedProductIds : [];
           const prodOptions =
-            `<option value="">（请选择）</option>` +
-            prods.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.title || p.id)}（${escapeHtml(String(p.archetype || ""))}）</option>`).join("");
+          `<option value="">（请选择）</option>` +
+          prods
+            .map((p) => {
+              const pid = String(p.id || "");
+              const disabled = done.includes(pid);
+              const suffix = disabled ? "（已复盘）" : "";
+              return `<option value="${escapeHtml(pid)}" ${disabled ? "disabled" : ""}>${escapeHtml(p.title || pid)}（${escapeHtml(String(p.archetype || ""))}）${suffix}</option>`;
+            })
+            .join("");
           openModal({
             title: "泽娜复盘（解锁已知搭配）",
             body: `
-              <div class="muted">选择一个历史产品/项目做复盘。复盘完成后，泽娜会解锁该【类型】的已知搭配表（可重复）。</div>
+            <div class="muted">选择一个历史产品/项目做复盘。同一对象只能复盘一次；且只有<b>高匹配（≥${ZENA_RECIPE_UNLOCK_MATCH_PCT}）</b>复盘后才会解锁该【类型】的配方表。</div>
               <div style="margin-top:12px;">
                 <div class="muted" style="margin-bottom:6px;">选择历史产品/项目</div>
                 <select class="select" id="pmProductId">${prodOptions}</select>
@@ -1167,7 +1337,8 @@ function main() {
               closeModal();
               save(state);
               render(state);
-              switchTab("market");
+              // 候选人列表在“团队”页的招聘区（没有单独 market tab）
+              switchTab("team");
             },
           },
           {
@@ -1179,7 +1350,8 @@ function main() {
               closeModal();
               save(state);
               render(state);
-              switchTab("market");
+              // 候选人列表在“团队”页的招聘区（没有单独 market tab）
+              switchTab("team");
             },
           },
           {
@@ -1192,11 +1364,15 @@ function main() {
               closeModal();
               save(state);
               render(state);
-              switchTab("market");
+              // 候选人列表在“团队”页的招聘区（没有单独 market tab）
+              switchTab("team");
             },
           },
         ],
       });
+    },
+    onRecipeBook: () => {
+      openKnownMatchTableModal(state);
     },
     onCloseModal: closeModal,
   });

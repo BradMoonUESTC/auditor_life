@@ -1,4 +1,4 @@
-import { clamp, ri } from "./utils.js?v=57";
+import { clamp, ri } from "./utils.js?v=62";
 
 export function defaultState() {
   const s = {
@@ -73,6 +73,7 @@ export function defaultState() {
       gameOver: null,
       // crisis cooldowns (avoid chain-trigger modals)
       securityCrisisNextAtDay: 0,
+      complianceCrisisNextAtDay: 0,
     },
     progress: { totalWeeks: 0, earnedTotal: 0 },
     history: {
@@ -94,13 +95,23 @@ export function defaultState() {
       buybackPct: 0.0, // 0~0.5
       emissions: 0.0, // 0~1
       incentivesBudgetWeekly: 0, // ¥
+      marketingBudgetWeekly: 0, // ¥（获客/投放）
+      securityBudgetWeekly: 0, // ¥（安全/审计/赏金）
+      infraBudgetWeekly: 0, // ¥（扩容/稳定性/性能）
+      complianceBudgetWeekly: 0, // ¥（合规/法务）
+      referralPct: 0.0, // 0~0.3（推荐返佣强度，按收入抽成）
+      supportBudgetWeekly: 0, // ¥（客服/运营支持）
     },
     ui: {
       ratingQueue: [],
+      // 科研树平移位置（scroll container）
+      researchGraphScroll: { left: 0, top: 0 },
     },
     knowledge: {
       // “泽娜”提供的已知搭配：按 archetype 解锁（需要在科研里做复盘任务）
       zenaKnownArchetypes: [],
+      // 已经做过“泽娜复盘”的具体产品（同一个产品不允许重复复盘）
+      postmortemedProductIds: [],
     },
   };
   return s;
@@ -121,7 +132,7 @@ export function normalizeState(state) {
   state.settings.layout.colLeft = clamp(Math.round(state.settings.layout.colLeft), 260, 560);
 
   if (!state.player) state.player = { name: "马某某·Builder", title: "Web3 项目开发大亨（从零开荒）" };
-  if (!state.flags) state.flags = { tutorialShown: false, startFilled: false, gameOver: null, securityCrisisNextAtDay: 0 };
+  if (!state.flags) state.flags = { tutorialShown: false, startFilled: false, gameOver: null, securityCrisisNextAtDay: 0, complianceCrisisNextAtDay: 0 };
   if (!state.time) state.time = { paused: true, speed: 1, elapsedHours: 0, lastTs: 0, resumeAfterStageModal: false };
   if (typeof state.time.paused !== "boolean") state.time.paused = true;
   if (typeof state.time.speed !== "number") state.time.speed = 1;
@@ -134,6 +145,8 @@ export function normalizeState(state) {
   if (typeof state.flags.startFilled !== "boolean") state.flags.startFilled = false;
   if (typeof state.flags.securityCrisisNextAtDay !== "number") state.flags.securityCrisisNextAtDay = 0;
   state.flags.securityCrisisNextAtDay = clamp(Math.round(state.flags.securityCrisisNextAtDay), 0, 9999999);
+  if (typeof state.flags.complianceCrisisNextAtDay !== "number") state.flags.complianceCrisisNextAtDay = 0;
+  state.flags.complianceCrisisNextAtDay = clamp(Math.round(state.flags.complianceCrisisNextAtDay), 0, 9999999);
 
   if (!Array.isArray(state.stageQueue)) state.stageQueue = [];
   state.stageQueue = state.stageQueue
@@ -191,6 +204,24 @@ export function normalizeState(state) {
   if (!("task" in state.research)) state.research.task = null;
   if (state.research.task && typeof state.research.task !== "object") state.research.task = null;
   if (!state.ops) state.ops = defaultState().ops;
+  // ops defaults & clamp
+  const ops = state.ops;
+  if (typeof ops.buybackPct !== "number") ops.buybackPct = 0;
+  if (typeof ops.emissions !== "number") ops.emissions = 0;
+  if (typeof ops.incentivesBudgetWeekly !== "number") ops.incentivesBudgetWeekly = 0;
+  if (typeof ops.marketingBudgetWeekly !== "number") ops.marketingBudgetWeekly = 0;
+  if (typeof ops.securityBudgetWeekly !== "number") ops.securityBudgetWeekly = 0;
+  if (typeof ops.infraBudgetWeekly !== "number") ops.infraBudgetWeekly = 0;
+  if (typeof ops.complianceBudgetWeekly !== "number") ops.complianceBudgetWeekly = 0;
+  if (typeof ops.referralPct !== "number") ops.referralPct = 0;
+  if (typeof ops.supportBudgetWeekly !== "number") ops.supportBudgetWeekly = 0;
+
+  ops.buybackPct = clamp(Number(ops.buybackPct) || 0, 0, 0.5);
+  ops.emissions = clamp(Number(ops.emissions) || 0, 0, 1);
+  ops.referralPct = clamp(Number(ops.referralPct) || 0, 0, 0.3);
+  for (const k of ["incentivesBudgetWeekly", "marketingBudgetWeekly", "securityBudgetWeekly", "infraBudgetWeekly", "complianceBudgetWeekly", "supportBudgetWeekly"]) {
+    ops[k] = clamp(Math.round(Number(ops[k]) || 0), 0, 999999999);
+  }
 
   // ui queues (modal queue, etc.)
   if (!state.ui || typeof state.ui !== "object") state.ui = { ratingQueue: [] };
@@ -199,12 +230,25 @@ export function normalizeState(state) {
     .filter((x) => x && typeof x === "object")
     .slice(0, 30);
 
-  if (!state.knowledge || typeof state.knowledge !== "object") state.knowledge = { zenaKnownArchetypes: [] };
+  // research graph scroll (drag-to-pan)
+  if (!state.ui.researchGraphScroll || typeof state.ui.researchGraphScroll !== "object") state.ui.researchGraphScroll = { left: 0, top: 0 };
+  if (typeof state.ui.researchGraphScroll.left !== "number") state.ui.researchGraphScroll.left = 0;
+  if (typeof state.ui.researchGraphScroll.top !== "number") state.ui.researchGraphScroll.top = 0;
+  state.ui.researchGraphScroll.left = clamp(Math.round(state.ui.researchGraphScroll.left), 0, 999999);
+  state.ui.researchGraphScroll.top = clamp(Math.round(state.ui.researchGraphScroll.top), 0, 999999);
+
+  if (!state.knowledge || typeof state.knowledge !== "object") state.knowledge = { zenaKnownArchetypes: [], postmortemedProductIds: [] };
   if (!Array.isArray(state.knowledge.zenaKnownArchetypes)) state.knowledge.zenaKnownArchetypes = [];
   state.knowledge.zenaKnownArchetypes = state.knowledge.zenaKnownArchetypes
     .map((x) => String(x || ""))
     .filter(Boolean)
     .slice(0, 30);
+
+  if (!Array.isArray(state.knowledge.postmortemedProductIds)) state.knowledge.postmortemedProductIds = [];
+  state.knowledge.postmortemedProductIds = state.knowledge.postmortemedProductIds
+    .map((x) => String(x || ""))
+    .filter(Boolean)
+    .slice(0, 200);
 
   // inbox（可选事件列表）
   if (!state.inbox) state.inbox = { items: [] };

@@ -1,7 +1,7 @@
-import { $, $$ } from "./dom.js?v=57";
-import { clamp, escapeHtml, money } from "./utils.js?v=57";
-import { normalizeState, weekLabel } from "./state.js?v=57";
-import { ARCHETYPES, AUDIENCES, CHAINS, INBOX_DEFS, NARRATIVES, PLATFORMS, RESEARCH_TREE, ensureSelection, estimateDailyCashDelta, findTarget, projectProductScore10, projectStage, projectTechScore10, researchNodeStatus } from "./logic.js?v=57";
+import { $, $$ } from "./dom.js?v=62";
+import { clamp, escapeHtml, money } from "./utils.js?v=62";
+import { normalizeState, weekLabel } from "./state.js?v=62";
+import { ARCHETYPES, AUDIENCES, CHAINS, INBOX_DEFS, NARRATIVES, PLATFORMS, RESEARCH_TREE, ensureSelection, estimateDailyCashDelta, findTarget, projectProductScore, projectStage, projectTechScore, researchNodeStatus } from "./logic.js?v=62";
 
 export function switchTab(tabKey) {
   for (const btn of $$(".tab")) {
@@ -71,12 +71,13 @@ function renderTopbar(state) {
       const pct = clamp(Number(p.stageProgress) || 0, 0, 100);
       const progress01 = clamp((idx + pct / 100) / 3, 0, 1);
       const ease = Math.pow(progress01, 0.65);
-      const baseStart = 2 + clamp((Number(p.scale) || 1) - 1, 0, 2) * 0.4;
-      const targetP = projectProductScore10(p, state);
-      const targetT = projectTechScore10(p, state);
-      const curP = clamp(Math.round(baseStart + (targetP - baseStart) * ease), 1, 10);
-      const curT = clamp(Math.round(baseStart + (targetT - baseStart) * ease), 1, 10);
-      scoreHost.innerHTML = `${chip(`产品分 ${curP}/10`)}${chip(`技术分 ${curT}/10`)}`;
+      const ps = projectProductScore(p, state);
+      const ts = projectTechScore(p, state);
+
+      // 用户不需要知道上限：只显示当前分数（随进度增长）
+      const curP = clamp(Math.round(ps.score * ease), 0, 999999999);
+      const curT = clamp(Math.round(ts.score * ease), 0, 999999999);
+      scoreHost.innerHTML = `${chip(`产品分 ${curP.toLocaleString("zh-CN")}`)}${chip(`技术分 ${curT.toLocaleString("zh-CN")}`)}`;
     } else {
       scoreHost.innerHTML = "";
     }
@@ -89,6 +90,14 @@ function renderTopbar(state) {
 
   const timeSpeed = document.getElementById("timeSpeed");
   if (timeSpeed) timeSpeed.value = String(state.time?.speed ?? 1);
+
+  // Recipe book (achievement-like): show unlocked count
+  const rb = document.getElementById("recipeBookBtn");
+  if (rb) {
+    const unlocked = Array.isArray(state.knowledge?.zenaKnownArchetypes) ? state.knowledge.zenaKnownArchetypes.length : 0;
+    const total = Array.isArray(ARCHETYPES) ? ARCHETYPES.length : 0;
+    rb.textContent = total ? `配方表 ${unlocked}/${total}` : `配方表 ${unlocked}`;
+  }
 }
 
 function applyLayout(state) {
@@ -135,12 +144,13 @@ function renderDashboard(state) {
     const s = p.scores || {};
     const known = Boolean(p?.archetype && Array.isArray(state.knowledge?.zenaKnownArchetypes) && state.knowledge.zenaKnownArchetypes.includes(String(p.archetype)));
     const quality10 = clamp(Math.round(1 + clamp(Math.round(s.match || 0), 0, 100) / 100 * 9), 1, 10);
+    const pmDone = Array.isArray(state.knowledge?.postmortemedProductIds) && state.knowledge.postmortemedProductIds.includes(String(p.id || ""));
     return `<div class="item">
       <div class="item__top">
         <div>
           <div class="item__title">${escapeHtml(p.title)}</div>
           <div class="muted" style="margin-top:6px;">
-            DAU ${Math.round(k.dau || 0).toLocaleString("zh-CN")} · TVL ${Math.round(k.tvl || 0).toLocaleString("zh-CN")} · 周利润 ${money(k.profit || 0)}
+            DAU ${Math.round(k.dau || 0).toLocaleString("zh-CN")} · TVL ${Math.round(k.tvl || 0).toLocaleString("zh-CN")} · 日利润 ${money(k.profit || 0)}
           </div>
         </div>
         <div class="chips">
@@ -149,7 +159,8 @@ function renderDashboard(state) {
       </div>
       <div class="item__actions">
         <button class="btn" data-select="product:${p.id}">设为当前</button>
-        <button class="btn btn--ghost" data-postmortem="${escapeHtml(p.id)}">复盘</button>
+        <button class="btn btn--ghost" data-postmortem="${escapeHtml(p.id)}" ${pmDone ? "disabled" : ""}>${pmDone ? "已复盘" : "复盘"}</button>
+        <button class="btn btn--ghost" data-abandon="product:${p.id}">废弃</button>
       </div>
     </div>`;
   };
@@ -159,11 +170,20 @@ function renderDashboard(state) {
     const pf = (PLATFORMS || []).find((x) => x.key === d.platform)?.name || d.platform || "—";
     const meta = `${escapeHtml(labelOf(ARCHETYPES, d.archetype))} · ${escapeHtml(labelOf(NARRATIVES, d.narrative))} · ${escapeHtml(labelOf(CHAINS, d.chain))} · ${escapeHtml(labelOf(AUDIENCES, d.audience))} · ${escapeHtml(pf)}`;
     const avg = Number(d.avgRating10) || 0;
-    const ps = Math.round(Number(d.productScore10) || 0);
-    const ts = Math.round(Number(d.techScore10) || 0);
+    const pScore = Number.isFinite(Number(d.productScore))
+      ? Math.round(Number(d.productScore))
+      : Number.isFinite(Number(d.productScore10))
+        ? Math.round(Number(d.productScore10))
+        : 0;
+    const tScore = Number.isFinite(Number(d.techScore))
+      ? Math.round(Number(d.techScore))
+      : Number.isFinite(Number(d.techScore10))
+        ? Math.round(Number(d.techScore10))
+        : 0;
     const fansG = Math.round(Number(d.fansGained) || 0);
     const cost = Math.round(Number(d.costSpent) || 0);
     const postId = d.kind === "launch" ? d.productId : d.baseProductId;
+    const pmDone = Boolean(postId && Array.isArray(state.knowledge?.postmortemedProductIds) && state.knowledge.postmortemedProductIds.includes(String(postId)));
     return `
       <div class="item">
         <div class="item__top">
@@ -172,15 +192,15 @@ function renderDashboard(state) {
             <div class="muted" style="margin-top:6px;">${meta}</div>
           </div>
           <div class="chips">
-            ${chip(`产品分 ${ps}/10`)}
-            ${chip(`技术分 ${ts}/10`)}
+            ${chip(`产品分 ${pScore.toLocaleString("zh-CN")}`)}
+            ${chip(`技术分 ${tScore.toLocaleString("zh-CN")}`)}
             ${chip(`粉丝 +${fansG.toLocaleString("zh-CN")}`)}
             ${chip(`成本 ${money(cost)}`)}
           </div>
         </div>
         <div class="item__actions">
           <button class="btn" data-done-detail="${escapeHtml(d.id)}">详情</button>
-          ${postId ? `<button class="btn btn--ghost" data-postmortem="${escapeHtml(postId)}">复盘</button>` : ""}
+          ${postId ? `<button class="btn btn--ghost" data-postmortem="${escapeHtml(postId)}" ${pmDone ? "disabled" : ""}>${pmDone ? "已复盘" : "复盘"}</button>` : ""}
         </div>
       </div>
     `;
@@ -382,6 +402,16 @@ function renderTeam(state) {
 function renderResearch(state) {
   const host = document.getElementById("researchPanel");
   if (!host) return;
+
+  // persist scroll position across rerenders (e.g., daily refresh)
+  const prevGraph = host.querySelector?.(".researchGraph");
+  if (prevGraph && prevGraph instanceof HTMLElement) {
+    state.ui = state.ui || {};
+    state.ui.researchGraphScroll = state.ui.researchGraphScroll || { left: 0, top: 0 };
+    state.ui.researchGraphScroll.left = prevGraph.scrollLeft;
+    state.ui.researchGraphScroll.top = prevGraph.scrollTop;
+  }
+
   const e = state.engine || {};
   const r = state.resources;
   const task = state.research?.task || null;
@@ -492,6 +522,15 @@ function renderResearch(state) {
       </div>
     </div>
   `;
+
+  // restore scroll position after rerender
+  const graph = host.querySelector?.(".researchGraph");
+  if (graph && graph instanceof HTMLElement) {
+    const sl = clamp(Math.round(state.ui?.researchGraphScroll?.left ?? 0), 0, 999999);
+    const st = clamp(Math.round(state.ui?.researchGraphScroll?.top ?? 0), 0, 999999);
+    graph.scrollLeft = sl;
+    graph.scrollTop = st;
+  }
 }
 
 function renderOpsInto(host, state, compact = false) {
@@ -605,34 +644,32 @@ function renderOpsInto(host, state, compact = false) {
             </div>
           </div>
           <div class="item__body">
-            <div class="muted" style="margin-bottom:6px;">币价</div>
-            ${sparkline(
-              hist.map((x) => x.tokenPrice),
-              hist.map((x) => x?.t?.dateISO || ""),
-              520,
-              110
-            )}
-            <div class="muted" style="margin-bottom:6px;">DAU</div>
-            ${sparkline(
-              hist.map((x) => x.dau),
-              hist.map((x) => x?.t?.dateISO || ""),
-              520,
-              110
-            )}
-            <div class="muted" style="margin-top:10px;margin-bottom:6px;">TVL</div>
-            ${sparkline(
-              hist.map((x) => x.tvl),
-              hist.map((x) => x?.t?.dateISO || ""),
-              520,
-              110
-            )}
-            <div class="muted" style="margin-top:10px;margin-bottom:6px;">利润（每日）</div>
-            ${sparkline(
-              hist.map((x) => x.profit),
-              hist.map((x) => x?.t?.dateISO || ""),
-              520,
-              110
-            )}
+            <div style="display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px;">
+              <div>
+                <div class="muted" style="margin-bottom:6px;">币价</div>
+                ${sparkline(hist.map((x) => x.tokenPrice), hist.map((x) => x?.t?.dateISO || ""), 440, 110)}
+              </div>
+              <div>
+                <div class="muted" style="margin-bottom:6px;">DAU</div>
+                ${sparkline(hist.map((x) => x.dau), hist.map((x) => x?.t?.dateISO || ""), 440, 110)}
+              </div>
+              <div>
+                <div class="muted" style="margin-bottom:6px;">TVL</div>
+                ${sparkline(hist.map((x) => x.tvl), hist.map((x) => x?.t?.dateISO || ""), 440, 110)}
+              </div>
+              <div>
+                <div class="muted" style="margin-bottom:6px;">利润（每日）</div>
+                ${sparkline(hist.map((x) => x.profit), hist.map((x) => x?.t?.dateISO || ""), 440, 110)}
+              </div>
+              <div>
+                <div class="muted" style="margin-bottom:6px;">收入（每日）</div>
+                ${sparkline(hist.map((x) => x.revenue ?? 0), hist.map((x) => x?.t?.dateISO || ""), 440, 110)}
+              </div>
+              <div>
+                <div class="muted" style="margin-bottom:6px;">留存</div>
+                ${sparkline(hist.map((x) => x.retention ?? 0), hist.map((x) => x?.t?.dateISO || ""), 440, 110)}
+              </div>
+            </div>
           </div>
         </div>
       `
@@ -650,17 +687,106 @@ function renderOpsInto(host, state, compact = false) {
         <div class="chips">${chip(`费率 ${k.feeRateBps || 0} bps`)}</div>
       </div>
       <div class="item__body">
-        <div class="muted" style="margin-bottom:6px;">手续费 (bps)</div>
-        <input class="input" type="range" min="0" max="80" value="${clamp(Math.round(k.feeRateBps || 0), 0, 80)}" data-ops="feeRateBps:${target.id}" />
-        <div class="muted" style="margin-top:10px;margin-bottom:6px;">回购比例 (0~50%)</div>
-        <input class="input" type="range" min="0" max="50" value="${clamp(Math.round((ops.buybackPct || 0) * 100), 0, 50)}" data-ops="buybackPct:${target.id}" />
-        <div class="muted" style="margin-top:10px;margin-bottom:6px;">排放/增发强度 (0~100)</div>
-        <input class="input" type="range" min="0" max="100" value="${clamp(Math.round((ops.emissions || 0) * 100), 0, 100)}" data-ops="emissions:${target.id}" />
-        <div class="muted" style="margin-top:10px;margin-bottom:6px;">每周激励预算 (¥)</div>
-        <input class="input" type="number" min="0" step="100" value="${clamp(Math.round(ops.incentivesBudgetWeekly || 0), 0, 999999999)}" data-ops="incentivesBudgetWeekly:${target.id}" />
+        <div class="opsControlsGrid" style="display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px;">
+          <label class="muted opsCtl" style="display:block;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+              <span>费率 (bps)</span>
+              <b>${escapeHtml(String(clamp(Math.round(k.feeRateBps || 0), 0, 80)))} bps</b>
+            </div>
+            <input class="input opsRange" style="margin-top:4px;" type="range" min="0" max="80" step="1" value="${clamp(Math.round(k.feeRateBps || 0), 0, 80)}" data-ops="feeRateBps:${target.id}" />
+          </label>
+          <label class="muted opsCtl" style="display:block;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+              <span>回购 (%)</span>
+              <b>${escapeHtml(String(clamp(Math.round((ops.buybackPct || 0) * 100), 0, 50)))}%</b>
+            </div>
+            <input class="input opsRange" style="margin-top:4px;" type="range" min="0" max="50" step="1" value="${clamp(Math.round((ops.buybackPct || 0) * 100), 0, 50)}" data-ops="buybackPct:${target.id}" />
+          </label>
+          <label class="muted opsCtl" style="display:block;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+              <span>排放 (%)</span>
+              <b>${escapeHtml(String(clamp(Math.round((ops.emissions || 0) * 100), 0, 100)))}%</b>
+            </div>
+            <input class="input opsRange" style="margin-top:4px;" type="range" min="0" max="100" step="1" value="${clamp(Math.round((ops.emissions || 0) * 100), 0, 100)}" data-ops="emissions:${target.id}" />
+          </label>
+          <label class="muted opsCtl" style="display:block;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+              <span>激励 (¥/周)</span>
+              <b>${escapeHtml(money(clamp(Math.round(ops.incentivesBudgetWeekly || 0), 0, 999999999)))}</b>
+            </div>
+            <input class="input opsRange" style="margin-top:4px;" type="range" min="0" max="300000" step="500" value="${clamp(Math.round(ops.incentivesBudgetWeekly || 0), 0, 300000)}" data-ops="incentivesBudgetWeekly:${target.id}" />
+          </label>
+          ${compact ? "" : `
+            <label class="muted opsCtl" style="display:block;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                <span>投放 (¥/周)</span>
+                <b>${escapeHtml(money(clamp(Math.round(ops.marketingBudgetWeekly || 0), 0, 999999999)))}</b>
+              </div>
+              <input class="input opsRange" style="margin-top:4px;" type="range" min="0" max="300000" step="500" value="${clamp(Math.round(ops.marketingBudgetWeekly || 0), 0, 300000)}" data-ops="marketingBudgetWeekly:${target.id}" />
+            </label>
+            <label class="muted opsCtl" style="display:block;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                <span>返佣 (%)</span>
+                <b>${escapeHtml(String(clamp(Math.round((ops.referralPct || 0) * 100), 0, 30)))}%</b>
+              </div>
+              <input class="input opsRange" style="margin-top:4px;" type="range" min="0" max="30" step="1" value="${clamp(Math.round((ops.referralPct || 0) * 100), 0, 30)}" data-ops="referralPct:${target.id}" />
+            </label>
+            <label class="muted opsCtl" style="display:block;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                <span>支持 (¥/周)</span>
+                <b>${escapeHtml(money(clamp(Math.round(ops.supportBudgetWeekly || 0), 0, 999999999)))}</b>
+              </div>
+              <input class="input opsRange" style="margin-top:4px;" type="range" min="0" max="200000" step="500" value="${clamp(Math.round(ops.supportBudgetWeekly || 0), 0, 200000)}" data-ops="supportBudgetWeekly:${target.id}" />
+            </label>
+            <label class="muted opsCtl" style="display:block;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                <span>安全 (¥/周)</span>
+                <b>${escapeHtml(money(clamp(Math.round(ops.securityBudgetWeekly || 0), 0, 999999999)))}</b>
+              </div>
+              <input class="input opsRange" style="margin-top:4px;" type="range" min="0" max="300000" step="500" value="${clamp(Math.round(ops.securityBudgetWeekly || 0), 0, 300000)}" data-ops="securityBudgetWeekly:${target.id}" />
+            </label>
+            <label class="muted opsCtl" style="display:block;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                <span>Infra (¥/周)</span>
+                <b>${escapeHtml(money(clamp(Math.round(ops.infraBudgetWeekly || 0), 0, 999999999)))}</b>
+              </div>
+              <input class="input opsRange" style="margin-top:4px;" type="range" min="0" max="400000" step="500" value="${clamp(Math.round(ops.infraBudgetWeekly || 0), 0, 400000)}" data-ops="infraBudgetWeekly:${target.id}" />
+            </label>
+            <label class="muted opsCtl" style="display:block;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                <span>合规 (¥/周)</span>
+                <b>${escapeHtml(money(clamp(Math.round(ops.complianceBudgetWeekly || 0), 0, 999999999)))}</b>
+              </div>
+              <input class="input opsRange" style="margin-top:4px;" type="range" min="0" max="300000" step="500" value="${clamp(Math.round(ops.complianceBudgetWeekly || 0), 0, 300000)}" data-ops="complianceBudgetWeekly:${target.id}" />
+            </label>
+          `}
+        </div>
+
+        ${compact ? `
+          <div class="muted" style="margin-top:10px;">更多运营参数请在“运营”页调整。</div>
+        ` : `
+          <div class="divider"></div>
+          <div class="subhead">拆分指标（每日）</div>
+          <div class="chips" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+            <span class="chip">收入 ${money(k.revenue || 0)}</span>
+            <span class="chip">其中手续费 ${money(k.revenueFee || 0)}</span>
+            <span class="chip">其中基础 ${money(k.revenueBase || 0)}</span>
+            <span class="chip">成本·Infra ${money(k.costInfra || 0)}</span>
+            <span class="chip">成本·Sec ${money(k.costSec || 0)}</span>
+            <span class="chip">成本·激励 ${money(k.costIncentives || 0)}</span>
+            <span class="chip">成本·回购 ${money(k.costBuyback || 0)}</span>
+            <span class="chip">成本·投放 ${money(k.costMarketing || 0)}</span>
+            <span class="chip">成本·安全预算 ${money(k.costSecurity || 0)}</span>
+            <span class="chip">成本·合规预算 ${money(k.costCompliance || 0)}</span>
+            <span class="chip">成本·支持 ${money(k.costSupport || 0)}</span>
+            <span class="chip">成本·返佣 ${money(k.costReferral || 0)}</span>
+            <span class="chip">利润率 ${escapeHtml(String(k.marginPct ?? 0))}%</span>
+          </div>
+        `}
       </div>
       <div class="item__actions">
         <button class="btn btn--ghost" data-upgrade="${escapeHtml(target.id)}">二次开发</button>
+        <button class="btn btn--ghost" data-abandon="product:${escapeHtml(target.id)}">废弃产品</button>
       </div>
     </div>
     ${chartBlock}
@@ -752,6 +878,32 @@ export function render(state) {
  * @param {any} handlers
  */
 export function bind(state, handlers) {
+  // When time is running, the UI rerenders periodically.
+  // A click can be lost if the DOM node is replaced between pointerdown and click.
+  // Fix: trigger some critical actions on pointerdown and de-dup the subsequent click.
+  const skipClickKeys = new Set();
+
+  const isDisabledEl = (el) => {
+    if (!el || !(el instanceof Element)) return true;
+    // native disabled
+    if ("disabled" in el && Boolean(el.disabled)) return true;
+    // aria-disabled / disabled attr on non-native buttons
+    const aria = String(el.getAttribute?.("aria-disabled") || "").toLowerCase();
+    if (aria === "true") return true;
+    if (el.hasAttribute?.("disabled")) return true;
+    return false;
+  };
+
+  const fireOnPointerdown = (key, fn, ev) => {
+    if (!key || typeof fn !== "function") return false;
+    skipClickKeys.add(key);
+    fn();
+    // prevent the subsequent click from being needed / double-firing
+    ev.preventDefault();
+    ev.stopPropagation();
+    return true;
+  };
+
   // resizable left panel
   const leftSplit = document.querySelector('.vsplit[data-split="left"]');
   const leftPanel = document.getElementById("leftPanel");
@@ -851,6 +1003,132 @@ export function bind(state, handlers) {
     panel.style.top = `${top}px`;
   };
 
+  if (document.documentElement.dataset.uiPointerFastPathBound !== "1") {
+    document.documentElement.dataset.uiPointerFastPathBound = "1";
+    document.addEventListener(
+      "pointerdown",
+      (ev) => {
+        const t = ev.target instanceof Element ? ev.target : null;
+        if (!t) return;
+        if (ev.button != null && ev.button !== 0) return;
+
+        // Only fast-path on elements that look like buttons / clickable controls.
+        // (Avoid stealing pointerdown from inputs, selects, etc.)
+        const clickable = t.closest?.("button,[data-ui],[data-menu],[data-accept],[data-select],[data-stage],[data-abandon],[data-postmortem],[data-done-detail],[data-research],[data-inbox],[data-upgrade],[data-autoteam]");
+        if (!clickable || isDisabledEl(clickable)) return;
+
+        const menuBtn = t.closest?.("[data-menu]");
+        if (menuBtn) {
+          const kind = String(menuBtn.getAttribute("data-menu") || "").trim();
+          if (!kind) return;
+          return fireOnPointerdown(`menu:${kind}`, () => openMenu(kind, menuBtn), ev);
+        }
+
+        const tabBtn = t.closest?.(".tab");
+        if (tabBtn) {
+          const tabKey = String(tabBtn.dataset?.tab || "");
+          if (!tabKey) return;
+          return fireOnPointerdown(`tab:${tabKey}`, () => switchTab(tabKey), ev);
+        }
+
+        const uiBtn = t.closest?.("[data-ui]");
+        if (uiBtn) {
+          const key = String(uiBtn.getAttribute("data-ui") || "");
+          if (!key) return;
+          return fireOnPointerdown(
+            `ui:${key}`,
+            () => {
+              if (key === "closeModal") handlers.onCloseModal?.();
+              if (key === "closeMenus") closeMenus();
+              if (key === "toggleTime") handlers.onToggleTime?.();
+              if (key === "saveGame") handlers.onSave?.();
+              if (key === "newGame") handlers.onNewGame?.();
+              if (key === "createProject") handlers.onCreateProject?.();
+              if (key === "exploreCandidates") handlers.onExploreCandidates?.();
+              if (key === "recipeBook") handlers.onRecipeBook?.();
+              if (key === "resetGame") handlers.onResetGame?.();
+              if (key === "clearLog") handlers.onClearLog?.();
+            },
+            ev
+          );
+        }
+
+        const upBtn = t.closest?.("[data-upgrade]");
+        if (upBtn) {
+          const productId = String(upBtn.getAttribute("data-upgrade") || "");
+          if (!productId) return;
+          return fireOnPointerdown(`upgrade:${productId}`, () => handlers.onCreateProject?.(productId), ev);
+        }
+
+        const accBtn = t.closest?.("[data-accept]");
+        if (accBtn) {
+          const raw = String(accBtn.getAttribute("data-accept") || "");
+          const [kind, id] = raw.split(":");
+          if (!kind || !id) return;
+          return fireOnPointerdown(`accept:${kind}:${id}`, () => handlers.onAccept?.(kind, id), ev);
+        }
+
+        const selBtn = t.closest?.("[data-select]");
+        if (selBtn) {
+          const [kind, id] = String(selBtn.getAttribute("data-select") || "").split(":");
+          if (!kind || !id) return;
+          return fireOnPointerdown(`select:${kind}:${id}`, () => handlers.onSelect?.(kind, id), ev);
+        }
+
+        const stageBtn = t.closest?.("[data-stage]");
+        if (stageBtn) {
+          const [kind, id] = String(stageBtn.getAttribute("data-stage") || "").split(":");
+          if (!kind || !id) return;
+          return fireOnPointerdown(`stage:${kind}:${id}`, () => handlers.onStage?.(kind, id), ev);
+        }
+
+        const autoTeamBtn = t.closest?.("[data-autoteam]");
+        if (autoTeamBtn) {
+          const [projectId, stageKey] = String(autoTeamBtn.getAttribute("data-autoteam") || "").split(":");
+          if (!projectId || !stageKey) return;
+          return fireOnPointerdown(`autoteam:${projectId}:${stageKey}`, () => handlers.onAutoTeam?.(projectId, stageKey), ev);
+        }
+
+        const abandonBtn = t.closest?.("[data-abandon]");
+        if (abandonBtn) {
+          const [kind, id] = String(abandonBtn.getAttribute("data-abandon") || "").split(":");
+          if (!kind || !id) return;
+          return fireOnPointerdown(`abandon:${kind}:${id}`, () => handlers.onAbandon?.(kind, id), ev);
+        }
+
+        const pmBtn = t.closest?.("[data-postmortem]");
+        if (pmBtn) {
+          const productId = String(pmBtn.getAttribute("data-postmortem") || "");
+          if (!productId) return;
+          return fireOnPointerdown(`postmortem:${productId}`, () => handlers.onPostmortem?.(productId), ev);
+        }
+
+        const doneBtn = t.closest?.("[data-done-detail]");
+        if (doneBtn) {
+          const id = String(doneBtn.getAttribute("data-done-detail") || "");
+          if (!id) return;
+          return fireOnPointerdown(`doneDetail:${id}`, () => handlers.onDoneDetail?.(id), ev);
+        }
+
+        const rBtn = t.closest?.("[data-research]");
+        if (rBtn) {
+          const raw = String(rBtn.getAttribute("data-research") || "");
+          if (!raw) return;
+          return fireOnPointerdown(`research:${raw}`, () => handlers.onResearch?.(raw), ev);
+        }
+
+        const inboxBtn = t.closest?.("[data-inbox]");
+        if (inboxBtn) {
+          const raw = String(inboxBtn.getAttribute("data-inbox") || "");
+          const [itemId, choiceKey] = raw.split(":");
+          if (!itemId || !choiceKey) return;
+          return fireOnPointerdown(`inbox:${itemId}:${choiceKey}`, () => handlers.onInboxChoice?.(itemId, choiceKey), ev);
+        }
+      },
+      { capture: true }
+    );
+  }
+
   document.addEventListener("click", (ev) => {
     const raw = ev.target;
     const el = raw instanceof Element ? raw : raw?.parentElement;
@@ -859,12 +1137,14 @@ export function bind(state, handlers) {
     const menuBtn = el.closest?.("[data-menu]");
     if (menuBtn) {
       const kind = String(menuBtn.getAttribute("data-menu") || "").trim();
+      if (skipClickKeys.delete(`menu:${kind}`)) return;
       if (kind) openMenu(kind, menuBtn);
       return;
     }
 
     const tabBtn = el.closest?.(".tab");
     if (tabBtn) {
+      if (skipClickKeys.delete(`tab:${String(tabBtn.dataset?.tab || "")}`)) return;
       switchTab(tabBtn.dataset.tab);
       return;
     }
@@ -872,13 +1152,17 @@ export function bind(state, handlers) {
     const uiBtn = el.closest?.("[data-ui]");
     if (uiBtn) {
       const key = uiBtn.getAttribute("data-ui");
+      if (skipClickKeys.delete(`ui:${String(key || "")}`)) return;
       if (key === "closeModal") handlers.onCloseModal?.();
       if (key === "closeMenus") closeMenus();
       if (key === "toggleTime") handlers.onToggleTime?.();
       if (key === "saveGame") handlers.onSave?.();
       if (key === "newGame") handlers.onNewGame?.();
       if (key === "createProject") handlers.onCreateProject?.();
-      if (key === "exploreCandidates") handlers.onExploreCandidates?.();
+      if (key === "exploreCandidates") {
+        handlers.onExploreCandidates?.();
+      }
+      if (key === "recipeBook") handlers.onRecipeBook?.();
       if (key === "resetGame") handlers.onResetGame?.();
       if (key === "clearLog") handlers.onClearLog?.();
       return;
@@ -887,6 +1171,7 @@ export function bind(state, handlers) {
     const upBtn = el.closest?.("[data-upgrade]");
     if (upBtn) {
       const productId = String(upBtn.getAttribute("data-upgrade") || "");
+      if (skipClickKeys.delete(`upgrade:${productId}`)) return;
       if (productId) handlers.onCreateProject?.(productId);
       return;
     }
@@ -894,6 +1179,7 @@ export function bind(state, handlers) {
     const accBtn = el.closest?.("[data-accept]");
     if (accBtn) {
       const [kind, id] = String(accBtn.getAttribute("data-accept") || "").split(":");
+      if (skipClickKeys.delete(`accept:${kind}:${id}`)) return;
       handlers.onAccept?.(kind, id);
       return;
     }
@@ -901,6 +1187,7 @@ export function bind(state, handlers) {
     const selBtn = el.closest?.("[data-select]");
     if (selBtn) {
       const [kind, id] = String(selBtn.getAttribute("data-select") || "").split(":");
+      if (skipClickKeys.delete(`select:${kind}:${id}`)) return;
       handlers.onSelect?.(kind, id);
       return;
     }
@@ -908,6 +1195,7 @@ export function bind(state, handlers) {
     const stageBtn = el.closest?.("[data-stage]");
     if (stageBtn) {
       const [kind, id] = String(stageBtn.getAttribute("data-stage") || "").split(":");
+      if (skipClickKeys.delete(`stage:${kind}:${id}`)) return;
       handlers.onStage?.(kind, id);
       return;
     }
@@ -915,6 +1203,7 @@ export function bind(state, handlers) {
     const autoTeamBtn = el.closest?.("[data-autoteam]");
     if (autoTeamBtn) {
       const [projectId, stageKey] = String(autoTeamBtn.getAttribute("data-autoteam") || "").split(":");
+      if (skipClickKeys.delete(`autoteam:${projectId}:${stageKey}`)) return;
       if (projectId && stageKey) handlers.onAutoTeam?.(projectId, stageKey);
       return;
     }
@@ -922,6 +1211,7 @@ export function bind(state, handlers) {
     const abandonBtn = el.closest?.("[data-abandon]");
     if (abandonBtn) {
       const [kind, id] = String(abandonBtn.getAttribute("data-abandon") || "").split(":");
+      if (skipClickKeys.delete(`abandon:${kind}:${id}`)) return;
       handlers.onAbandon?.(kind, id);
       return;
     }
@@ -929,6 +1219,7 @@ export function bind(state, handlers) {
     const pmBtn = el.closest?.("[data-postmortem]");
     if (pmBtn) {
       const productId = String(pmBtn.getAttribute("data-postmortem") || "");
+      if (skipClickKeys.delete(`postmortem:${productId}`)) return;
       if (productId) handlers.onPostmortem?.(productId);
       return;
     }
@@ -936,19 +1227,23 @@ export function bind(state, handlers) {
     const doneBtn = el.closest?.("[data-done-detail]");
     if (doneBtn) {
       const id = String(doneBtn.getAttribute("data-done-detail") || "");
+      if (skipClickKeys.delete(`doneDetail:${id}`)) return;
       if (id) handlers.onDoneDetail?.(id);
       return;
     }
 
     const rBtn = el.closest?.("[data-research]");
     if (rBtn) {
-      handlers.onResearch?.(String(rBtn.getAttribute("data-research") || ""));
+      const rr = String(rBtn.getAttribute("data-research") || "");
+      if (skipClickKeys.delete(`research:${rr}`)) return;
+      handlers.onResearch?.(rr);
       return;
     }
 
     const inboxBtn = el.closest?.("[data-inbox]");
     if (inboxBtn) {
       const [itemId, choiceKey] = String(inboxBtn.getAttribute("data-inbox") || "").split(":");
+      if (skipClickKeys.delete(`inbox:${itemId}:${choiceKey}`)) return;
       if (itemId && choiceKey) handlers.onInboxChoice?.(itemId, choiceKey);
       return;
     }

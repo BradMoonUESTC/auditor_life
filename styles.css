@@ -252,6 +252,21 @@ select.select:hover{ background-color: rgba(255,255,255,.06); }
 .panel{ display:flex; flex-direction:column; gap:12px; min-height:0; overflow:hidden; }
 .content{ display:flex; flex-direction:column; gap:12px; min-height:0; overflow:hidden; }
 
+/* Right sidebar: make "fixed ops" take full height (more vertical room) */
+#rightPanel{ min-height:0; }
+#rightPanel > .card{
+  flex: 1 1 auto;
+  min-height: 0;
+  display:flex;
+  flex-direction:column;
+}
+#opsPanelFixed{
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow:auto;
+  padding-right: 6px;
+}
+
 .vsplit{
   align-self:stretch;
   width: var(--split);
@@ -747,6 +762,67 @@ select.select:hover{ background-color: rgba(255,255,255,.06); }
 .chip--bad{ border-color: rgba(255,92,122,.35); color: rgba(255,92,122,.95); }
 .item__body{ margin-top:10px; color: var(--muted); font-size:13px; line-height:1.55; }
 .item__actions{ margin-top:12px; display:flex; gap:10px; flex-wrap:wrap; }
+
+/* ===== Ops sliders: compact vertical layout (no scroll if possible) ===== */
+#opsPanel .opsControlsGrid,
+#opsPanelFixed .opsControlsGrid{
+  gap: 8px !important;
+}
+#opsPanelFixed .opsControlsGrid{
+  gap: 6px !important;
+  grid-template-columns: 1fr !important; /* right sidebar is narrow; avoid wrapping/overlap */
+}
+
+#opsPanel .opsCtl,
+#opsPanelFixed .opsCtl{
+  font-size: 12px;
+  line-height: 1.15;
+}
+#opsPanelFixed .opsCtl{
+  /* ensure label and value never overlap in narrow column */
+  min-width: 0;
+}
+#opsPanelFixed .opsCtl > div{
+  flex-wrap: nowrap;
+}
+#opsPanelFixed .opsCtl > div > span{
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#opsPanelFixed .opsCtl > div > b{
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+#opsPanel .opsCtl b,
+#opsPanelFixed .opsCtl b{
+  font-family: var(--mono);
+  font-weight: 900;
+  font-size: 12px;
+}
+
+/* Range inputs should NOT inherit large padding from .input */
+#opsPanel input.opsRange.input,
+#opsPanelFixed input.opsRange.input{
+  padding: 4px 10px;
+  height: 24px;
+  border-radius: 10px;
+}
+
+/* Slightly tighter card spacing inside ops panels */
+#opsPanel .item,
+#opsPanelFixed .item{
+  padding: 10px;
+}
+#opsPanel .item__body,
+#opsPanelFixed .item__body{
+  margin-top: 8px;
+}
+#opsPanel .divider,
+#opsPanelFixed .divider{
+  margin: 10px 0;
+}
 
 .kvs{ display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:10px; margin-top:10px; }
 .kv{

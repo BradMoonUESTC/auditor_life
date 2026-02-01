@@ -1,5 +1,5 @@
-import { clamp, pick, ri, rnd } from "./utils.js?v=57";
-import { clampPct, log, normalizeState } from "./state.js?v=57";
+import { clamp, pick, ri, rnd } from "./utils.js?v=62";
+import { clampPct, log, normalizeState } from "./state.js?v=62";
 
 // ===== Constants (MVP) =====
 
@@ -48,6 +48,9 @@ export const MATCH_LEVEL = {
   mid: { key: "mid", label: "中等匹配", tone: "warn", pct: 70 },
   bad: { key: "bad", label: "不匹配", tone: "bad", pct: 40 },
 };
+
+// “泽娜配方表”解锁阈值：必须是高匹配的项目/产品复盘后才会解锁该类型的已知搭配表
+export const ZENA_RECIPE_UNLOCK_MATCH_PCT = 85;
 
 /** @type {Record<string, { narratives: Record<string,string>, chains: Record<string,string>, audiences: Record<string,string> }>} */
 export const KNOWN_MATCH_TABLE = {
@@ -187,7 +190,7 @@ export function upgradeOptionsForProduct(prod) {
 
 // Each archetype has a "recipe" preference for 3 stages.
 // Values 0~100. Matching matters (like GDT sliders).
-const RECIPE = {
+export const RECIPE = {
   dex: {
     S1: { uxVsMech: 45, decentralVsControl: 55, complianceVsAggro: 35 },
     S2: { onchainVsOffchain: 65, buildVsReuse: 55, speedVsQuality: 50 },
@@ -732,6 +735,68 @@ export function abandonProject(state, projectId) {
   return { ok: true };
 }
 
+/**
+ * Abandon an already-launched product.
+ * mode:
+ * - "sunset": gradual shutdown, mild damage
+ * - "rug": rug pull, heavy damage (and some cash gain)
+ */
+export function abandonLiveProduct(state, productId, mode = "sunset") {
+  normalizeState(state);
+  const id = String(productId || "");
+  const prod = (state.active?.products || []).find((x) => x.id === id) || null;
+  if (!prod) return { ok: false, msg: "找不到该已上线产品。" };
+
+  const m = String(mode || "sunset");
+  const r = state.resources || (state.resources = {});
+  const k = prod.kpi || {};
+
+  const fans0 = Math.max(0, Math.round(r.fans || 0));
+  let fansLoss = 0;
+  let cashGain = 0;
+
+  if (m === "sunset") {
+    fansLoss = Math.max(30, Math.round(fans0 * 0.06));
+    r.fans = clamp(Math.round(fans0 - fansLoss), 0, 999999999);
+    r.reputation = clampPct((r.reputation || 0) - 1);
+    r.community = clampPct((r.community || 0) - 2);
+    r.network = clampPct((r.network || 0) - 1);
+    r.securityRisk = clampPct((r.securityRisk || 0) + 1);
+    r.complianceRisk = clampPct((r.complianceRisk || 0) + 1);
+    log(state, `逐渐废弃产品：${prod.title}（粉丝 -${fansLoss.toLocaleString("zh-CN")}）`, "warn");
+  } else if (m === "rug") {
+    // cash gain: loosely tied to TVL/user base, capped to avoid breaking economy
+    const tvl = Number.isFinite(Number(k.tvl)) ? Math.max(0, Math.round(Number(k.tvl))) : 0;
+    const users = Number.isFinite(Number(k.users)) ? Math.max(0, Math.round(Number(k.users))) : 0;
+    cashGain = tvl > 0 ? Math.round(tvl * 0.02) : Math.round(users * 8);
+    cashGain = clamp(cashGain, 50_000, 5_000_000);
+    r.cash = Math.round((r.cash || 0) + cashGain);
+
+    fansLoss = Math.max(800, Math.round(fans0 * 0.35));
+    r.fans = clamp(Math.round(fans0 - fansLoss), 0, 999999999);
+    r.reputation = clampPct((r.reputation || 0) - 8);
+    r.community = clampPct((r.community || 0) - 12);
+    r.network = clampPct((r.network || 0) - 6);
+    r.securityRisk = clampPct((r.securityRisk || 0) + 15);
+    r.complianceRisk = clampPct((r.complianceRisk || 0) + 22);
+    log(
+      state,
+      `【Rug Pull】${prod.title}：现金 +${cashGain.toLocaleString("zh-CN")}，粉丝 -${fansLoss.toLocaleString("zh-CN")}，声誉/社区大幅受损。`,
+      "bad"
+    );
+  } else {
+    return { ok: false, msg: "未知废弃模式。" };
+  }
+
+  // remove product from live list
+  state.active.products = (state.active.products || []).filter((x) => x.id !== id);
+  if (state.selectedTarget?.kind === "product" && state.selectedTarget?.id === id) state.selectedTarget = null;
+  // pick a reasonable selection if needed
+  ensureSelection(state);
+
+  return { ok: true, mode: m, cashGain, fansLoss };
+}
+
 export function createProject(state, cfg) {
   normalizeState(state);
   if ((state.active.projects?.length || 0) >= 2) return { ok: false, msg: "同时进行的项目太多了（上限 2）。" };
@@ -789,7 +854,9 @@ export function createProject(state, cfg) {
     upgradeKey: baseProd ? upgradeKey : null,
   };
   state.active.projects.push(p);
-  state.selectedTarget = { kind: "project", id: p.id };
+  // 二次开发：这是对“原产品基础属性”的提升；运营应保持原来的（仍选中原产品）。
+  // 新项目：仍默认选中项目以便继续阶段配置。
+  state.selectedTarget = baseProd ? { kind: "product", id: baseProd.id } : { kind: "project", id: p.id };
   state.stageQueue = state.stageQueue || [];
   state.stageQueue.push({ kind: "project", id: p.id });
   log(state, baseProd ? `二次开发立项：${p.title}（预计 ${estWeeks} 周，预算 ¥${Math.round(p.budget).toLocaleString("zh-CN")}）` : `立项：${p.title}（规模 L${scale}，预计 ${estWeeks} 周，预算 ¥${Math.round(p.budget).toLocaleString("zh-CN")}）`, "good");
@@ -993,24 +1060,97 @@ function score10(x01) {
   return clamp(Math.round(1 + clamp(x01, 0, 1) * 9), 1, 10);
 }
 
-export function projectProductScore10(project, state) {
+function projectScorePotentials(project, state) {
+  // 用户不知道“上限”，但分数仍由“潜力”驱动（且无硬上限）。
+  // 设计目标：
+  // - 引擎未研究（v1）时，产品/技术分通常 <10
+  // - 大后期（研究满 + 资源增长）才到 1000+
+  const scale = clamp(Math.round(project?.scale ?? 1), 1, 9999);
+  const companyLevel = clamp(Math.round(state?.company?.level ?? 1), 1, 9999);
+  const e = engineBonus(state);
+
+  // capability: 1..9
+  const capProduct = Math.sqrt(e.eco * e.dev);
+  const capTech = (e.dev + e.sec + e.infra) / 3;
+  const t01 = (cap) => clamp((cap - 1) / 8, 0, 1);
+  const p01 = t01(capProduct);
+  const te01 = t01(capTech);
+
+  // minor bumps (won't dominate early game)
+  const rep = clamp(Math.round(state?.resources?.reputation ?? 0), 0, 9999);
+  const comm = clamp(Math.round(state?.resources?.community ?? 0), 0, 9999);
+  const tp = Math.max(0, Math.round(state?.resources?.techPoints ?? 0));
+  const net = clamp(Math.round(state?.resources?.network ?? 0), 0, 9999);
+  const fans = Math.max(0, Math.round(state?.resources?.fans ?? 0));
+  const fanTier = Math.log10(1 + fans); // 0.. (no cap)
+
+  // start around single digits; late game ramps hard via engine research
+  const productPotential =
+    8 +
+    1200 * Math.pow(p01, 2.2) +
+    fanTier * 200 +
+    (companyLevel - 1) * 40 +
+    (scale - 1) * 80 +
+    rep * 0.02 +
+    comm * 0.02 +
+    net * 0.03 +
+    Math.log10(1 + tp) * 2.5;
+
+  const techPotential =
+    6 +
+    1600 * Math.pow(te01, 2.4) +
+    fanTier * 220 +
+    (companyLevel - 1) * 55 +
+    (scale - 1) * 110 +
+    rep * 0.02 +
+    comm * 0.02 +
+    net * 0.03 +
+    Math.log10(1 + tp) * 3.5;
+
+  return {
+    productMax: Math.max(0, Math.round(productPotential)),
+    techMax: Math.max(0, Math.round(techPotential)),
+  };
+}
+
+const PRODUCT_SCORE_GAMMA = 1.35;
+const TECH_SCORE_GAMMA = 1.55;
+
+export function projectProductScore(project, state) {
   const s = computeLaunchScores(project, state);
-  const v = clamp((s.productFit * 0.55 + s.growth * 0.30 + s.compliance * 0.15) / 100, 0, 1);
-  return score10(v);
+  const ratio = clamp((s.productFit * 0.55 + s.growth * 0.30 + s.compliance * 0.15) / 100, 0, 1);
+  const { productMax } = projectScorePotentials(project, state);
+  // 曲线：压低中低档，鼓励冲高质量
+  const curved = clamp(Math.pow(ratio, PRODUCT_SCORE_GAMMA), 0, 1);
+  return { score: Math.round(curved * productMax), max: productMax, ratio };
+}
+
+export function projectTechScore(project, state) {
+  const s = computeLaunchScores(project, state);
+  const ratio = clamp((s.techQuality * 0.55 + s.security * 0.35 + s.teamPower * 0.10) / 100, 0, 1);
+  const { techMax } = projectScorePotentials(project, state);
+  const curved = clamp(Math.pow(ratio, TECH_SCORE_GAMMA), 0, 1);
+  return { score: Math.round(curved * techMax), max: techMax, ratio };
+}
+
+export function projectProductScore10(project, state) {
+  // legacy helper (keep for balancing formulas)
+  return score10(projectProductScore(project, state).ratio);
 }
 
 export function projectTechScore10(project, state) {
-  const s = computeLaunchScores(project, state);
-  const v = clamp((s.techQuality * 0.55 + s.security * 0.35 + s.teamPower * 0.10) / 100, 0, 1);
-  return score10(v);
+  // legacy helper (keep for balancing formulas)
+  return score10(projectTechScore(project, state).ratio);
 }
 
 function makeLiveProduct(project, state) {
   const scores = computeLaunchScores(project, state);
   const m = initialMetrics(project, scores, state);
   const initTokenPrice = clamp(0.35 + (scores.match / 100) * 1.8 + rnd(-0.08, 0.18), 0.08, 12);
-  const productScore10 = projectProductScore10(project, state);
-  const techScore10 = projectTechScore10(project, state);
+  const ps = projectProductScore(project, state);
+  const ts = projectTechScore(project, state);
+  const productScore10 = score10(ps.ratio);
+  const techScore10 = score10(ts.ratio);
   return {
     id: `PROD_${project.id}`,
     kind: "product",
@@ -1022,7 +1162,11 @@ function makeLiveProduct(project, state) {
     platform: project.platform || "web",
     launchedAt: { ...state.now },
     scores,
+    productScore: ps.score,
+    productScoreMax: ps.max,
     productScore10,
+    techScore: ts.score,
+    techScoreMax: ts.max,
     techScore10,
     features: [project.archetype],
     kpi: {
@@ -1044,6 +1188,12 @@ function makeLiveProduct(project, state) {
       buybackPct: clamp(state.ops?.buybackPct ?? 0, 0, 0.5),
       emissions: clamp(state.ops?.emissions ?? 0, 0, 1),
       incentivesBudgetWeekly: clamp(Math.round(state.ops?.incentivesBudgetWeekly ?? 0), 0, 999999999),
+      marketingBudgetWeekly: clamp(Math.round(state.ops?.marketingBudgetWeekly ?? 0), 0, 999999999),
+      securityBudgetWeekly: clamp(Math.round(state.ops?.securityBudgetWeekly ?? 0), 0, 999999999),
+      infraBudgetWeekly: clamp(Math.round(state.ops?.infraBudgetWeekly ?? 0), 0, 999999999),
+      complianceBudgetWeekly: clamp(Math.round(state.ops?.complianceBudgetWeekly ?? 0), 0, 999999999),
+      referralPct: clamp(state.ops?.referralPct ?? 0, 0, 0.3),
+      supportBudgetWeekly: clamp(Math.round(state.ops?.supportBudgetWeekly ?? 0), 0, 999999999),
     },
     risk: {
       security: clampPct(10 + (100 - scores.security) * 0.6),
@@ -1052,7 +1202,20 @@ function makeLiveProduct(project, state) {
   };
 }
 
-function ensureProductFields(prod) {
+function scoreRatioFromSavedScores(scores) {
+  const s = scores || {};
+  const pf = clampPct(s.productFit ?? 50);
+  const g = clampPct(s.growth ?? 50);
+  const c = clampPct(s.compliance ?? 50);
+  const tq = clampPct(s.techQuality ?? 50);
+  const sec = clampPct(s.security ?? 50);
+  const tp = clamp(Math.round(s.teamPower ?? 50), 10, 95);
+  const productRatio = clamp((pf * 0.55 + g * 0.30 + c * 0.15) / 100, 0, 1);
+  const techRatio = clamp((tq * 0.55 + sec * 0.35 + tp * 0.10) / 100, 0, 1);
+  return { productRatio, techRatio };
+}
+
+function ensureProductFields(prod, state = null) {
   if (!prod || typeof prod !== "object") return;
   if (!Array.isArray(prod.features)) prod.features = [];
   if (!prod.kpi) prod.kpi = {};
@@ -1061,18 +1224,46 @@ function ensureProductFields(prod) {
   if (typeof prod.kpi.tokenPrice !== "number") prod.kpi.tokenPrice = clamp(0.5 + rnd(-0.1, 0.2), 0.05, 8);
   if (typeof prod.kpi.cumProfit !== "number") prod.kpi.cumProfit = 0;
   if (typeof prod.kpi.cumRevenue !== "number") prod.kpi.cumRevenue = 0;
-  if (typeof prod.productScore10 !== "number") prod.productScore10 = clamp(Math.round(4 + rnd(-1, 2)), 1, 10);
-  if (typeof prod.techScore10 !== "number") prod.techScore10 = clamp(Math.round(4 + rnd(-1, 2)), 1, 10);
   if (typeof prod.costSpent !== "number") prod.costSpent = 0;
   if (typeof prod.scale !== "number") prod.scale = 1;
   if (typeof prod.platform !== "string") prod.platform = "web";
+
+  // ops defaults (may be inherited from state.ops in UI, but ensure fields exist)
+  prod.ops = prod.ops && typeof prod.ops === "object" ? prod.ops : {};
+  if (typeof prod.ops.buybackPct !== "number") prod.ops.buybackPct = 0;
+  if (typeof prod.ops.emissions !== "number") prod.ops.emissions = 0;
+  if (typeof prod.ops.incentivesBudgetWeekly !== "number") prod.ops.incentivesBudgetWeekly = 0;
+  if (typeof prod.ops.marketingBudgetWeekly !== "number") prod.ops.marketingBudgetWeekly = 0;
+  if (typeof prod.ops.securityBudgetWeekly !== "number") prod.ops.securityBudgetWeekly = 0;
+  if (typeof prod.ops.infraBudgetWeekly !== "number") prod.ops.infraBudgetWeekly = 0;
+  if (typeof prod.ops.complianceBudgetWeekly !== "number") prod.ops.complianceBudgetWeekly = 0;
+  if (typeof prod.ops.referralPct !== "number") prod.ops.referralPct = 0;
+  if (typeof prod.ops.supportBudgetWeekly !== "number") prod.ops.supportBudgetWeekly = 0;
+
+  // 新的产品分/技术分：动态上限（可增长）
+  if (typeof prod.productScoreMax !== "number" || !Number.isFinite(prod.productScoreMax)) {
+    const maxes = state ? projectScorePotentials({ scale: prod.scale || 1 }, state) : { productMax: 0, techMax: 0 };
+    prod.productScoreMax = maxes.productMax;
+  }
+  if (typeof prod.techScoreMax !== "number" || !Number.isFinite(prod.techScoreMax)) {
+    const maxes = state ? projectScorePotentials({ scale: prod.scale || 1 }, state) : { productMax: 0, techMax: 0 };
+    prod.techScoreMax = maxes.techMax;
+  }
+
+  const { productRatio, techRatio } = scoreRatioFromSavedScores(prod.scores);
+  if (typeof prod.productScore !== "number" || !Number.isFinite(prod.productScore)) prod.productScore = Math.round(productRatio * prod.productScoreMax);
+  if (typeof prod.techScore !== "number" || !Number.isFinite(prod.techScore)) prod.techScore = Math.round(techRatio * prod.techScoreMax);
+
+  // legacy scores for balancing and old UI
+  if (typeof prod.productScore10 !== "number" || !Number.isFinite(prod.productScore10)) prod.productScore10 = score10(productRatio);
+  if (typeof prod.techScore10 !== "number" || !Number.isFinite(prod.techScore10)) prod.techScore10 = score10(techRatio);
 }
 
 function applyUpgradeToProduct(state, baseProdId, upgradeKey, projectLike) {
   normalizeState(state);
   const prod = (state.active?.products || []).find((x) => x.id === baseProdId);
   if (!prod) return { ok: false, msg: "找不到要二次开发的产品。" };
-  ensureProductFields(prod);
+  ensureProductFields(prod, state);
   const opts = upgradeOptionsForProduct(prod);
   const up = opts.find((x) => x.key === upgradeKey);
   if (!up) return { ok: false, msg: "该产品不支持这个二次开发方向。" };
@@ -1112,6 +1303,16 @@ function applyUpgradeToProduct(state, baseProdId, upgradeKey, projectLike) {
   // risk adjusts slightly with added complexity
   prod.risk.security = clampPct((prod.risk.security || 10) + 2 + Math.max(0, (50 - (prod.scores.security || 50)) / 25));
   prod.risk.compliance = clampPct((prod.risk.compliance || 10) + 1 + Math.max(0, (50 - (prod.scores.compliance || 50)) / 30));
+
+  // refresh product/tech scores with current state (dynamic caps, no fixed upper bound)
+  const maxes = projectScorePotentials({ scale: prod.scale || 1 }, state);
+  prod.productScoreMax = maxes.productMax;
+  prod.techScoreMax = maxes.techMax;
+  const { productRatio, techRatio } = scoreRatioFromSavedScores(prod.scores);
+  prod.productScore = Math.round(productRatio * prod.productScoreMax);
+  prod.techScore = Math.round(techRatio * prod.techScoreMax);
+  prod.productScore10 = score10(productRatio);
+  prod.techScore10 = score10(techRatio);
 
   return { ok: true, upgrade: up };
 }
@@ -1185,11 +1386,15 @@ export function tickProjects(state, deltaHours) {
     if (r?.done) {
       if (p.upgradeOf && p.upgradeKey) {
         const spentCost = Math.round(Number(p.investedBudget) || 0);
-        const productScore10 = projectProductScore10(p, state);
-        const techScore10 = projectTechScore10(p, state);
+        const ps = projectProductScore(p, state);
+        const ts = projectTechScore(p, state);
+        const productScore10 = score10(ps.ratio);
+        const techScore10 = score10(ts.ratio);
         const rr = applyUpgradeToProduct(state, p.upgradeOf, p.upgradeKey, p);
         state.active.projects = state.active.projects.filter((x) => x.id !== p.id);
         if (rr.ok) {
+          // 二次开发完成后继续选中原产品，保证运营参数/面板保持原来的
+          state.selectedTarget = { kind: "product", id: String(p.upgradeOf) };
           const techGain = Math.round(2 + (matchScore(p) || 50) / 40);
           state.resources.techPoints = clamp((state.resources.techPoints || 0) + techGain, 0, 999999);
           log(state, `二次开发完成：${rr.upgrade.title}（技术点 +${techGain}）`, "good");
@@ -1217,7 +1422,11 @@ export function tickProjects(state, deltaHours) {
             audience: p.audience,
             platform: p.platform || "web",
             scale: p.scale || 1,
+            productScore: ps.score,
+            productScoreMax: ps.max,
             productScore10,
+            techScore: ts.score,
+            techScoreMax: ts.max,
             techScore10,
             avgRating10: Math.round(avg10 * 10) / 10,
             matchPct: mp,
@@ -1269,7 +1478,11 @@ export function tickProjects(state, deltaHours) {
           audience: prod.audience,
           platform: prod.platform || "web",
           scale: p.scale || 1,
+          productScore: prod.productScore,
+          productScoreMax: prod.productScoreMax,
           productScore10: prod.productScore10,
+          techScore: prod.techScore,
+          techScoreMax: prod.techScoreMax,
           techScore10: prod.techScore10,
           avgRating10: Math.round(avg10 * 10) / 10,
           matchPct: mp,
@@ -1407,7 +1620,7 @@ export const RESEARCH_TREE = {
     { id: "hub", kind: "meta", title: "研发中心", hint: "从这里开始点亮分支。", effectLabel: "起点", pos: { x: 0, y: 240 }, requires: [] },
 
     // Postmortem / review (repeatable)
-    { id: "postmortem_zena", kind: "postmortem", engineKey: "eco", title: "泽娜复盘：已知搭配", hint: "选择一个历史项目/产品做复盘；完成后才能“知道”该类型的已知搭配。可重复。", effectLabel: "解锁情报", pos: { x: 260, y: 240 }, requires: ["hub"] },
+    { id: "postmortem_zena", kind: "postmortem", engineKey: "eco", title: "泽娜复盘：已知搭配", hint: "选择一个历史产品/项目做复盘；完成后才能“知道”该类型的已知搭配。不同对象可重复，但同一对象只能复盘一次。", effectLabel: "解锁情报", pos: { x: 260, y: 240 }, requires: ["hub"] },
 
     // Dev branch
     { id: "ci_cd", kind: "engine_upgrade", engineKey: "dev", targetVersion: 2, title: "CI/CD 基础管线", hint: "自动化构建/测试/发布。", effectLabel: "Dev +1", pos: { x: 260, y: 120 }, requires: ["hub"] },
@@ -1511,6 +1724,8 @@ export function startResearchNode(state, nodeId, assigneeIdOrNull, payload = nul
       if (!pid) return { ok: false, msg: "复盘需要选择一个历史产品/项目。" };
       const prod = (state.active?.products || []).find((x) => x.id === pid) || null;
       if (!prod) return { ok: false, msg: "找不到该历史产品/项目。" };
+      const done = Array.isArray(state.knowledge?.postmortemedProductIds) ? state.knowledge.postmortemedProductIds : [];
+      if (done.includes(pid)) return { ok: false, msg: "该产品已复盘过（同一对象只能复盘一次）。" };
     } else {
       costTech = node.kind === "global_mod" ? 12 : 8;
       hoursTotal = node.kind === "global_mod" ? 14 : 10;
@@ -1542,11 +1757,18 @@ function applyResearchNodeEffect(state, nodeId) {
     const pid = state.research?.task?.payload?.productId ? String(state.research.task.payload.productId) : "";
     const prod = pid ? (state.active?.products || []).find((x) => x.id === pid) : null;
     const archetype = prod?.archetype ? String(prod.archetype) : "";
+    state.knowledge = state.knowledge || { zenaKnownArchetypes: [], postmortemedProductIds: [] };
+    state.knowledge.postmortemedProductIds = Array.isArray(state.knowledge.postmortemedProductIds) ? state.knowledge.postmortemedProductIds : [];
+    if (pid && !state.knowledge.postmortemedProductIds.includes(pid)) state.knowledge.postmortemedProductIds.push(pid);
     if (!archetype) {
       log(state, "复盘完成，但没有得到有效的项目类型信息。", "warn");
       return;
     }
-    state.knowledge = state.knowledge || { zenaKnownArchetypes: [] };
+    const match = clamp(Math.round(prod?.scores?.match ?? 0), 0, 100);
+    if (match < ZENA_RECIPE_UNLOCK_MATCH_PCT) {
+      log(state, `泽娜复盘完成：匹配度 ${match} 未达到“高匹配”阈值（≥${ZENA_RECIPE_UNLOCK_MATCH_PCT}），未解锁该类型配方表。`, "warn");
+      return;
+    }
     state.knowledge.zenaKnownArchetypes = Array.isArray(state.knowledge.zenaKnownArchetypes) ? state.knowledge.zenaKnownArchetypes : [];
     if (!state.knowledge.zenaKnownArchetypes.includes(archetype)) state.knowledge.zenaKnownArchetypes.push(archetype);
     log(state, `泽娜复盘完成：已解锁【${archetype.toUpperCase()}】类型的已知搭配表。`, "good");
@@ -1589,7 +1811,7 @@ export function tickLiveProductsWeekly(state) {
   const products = state.active.products || [];
 
   for (const prod of products) {
-    ensureProductFields(prod);
+    ensureProductFields(prod, state);
     const k = prod.kpi || {};
     const scores = prod.scores || {};
     const ops = prod.ops || {};
@@ -1654,7 +1876,11 @@ function recordProductHistoryDaily(state) {
       dau: Math.round(k.dau || 0),
       tvl: Math.round(k.tvl || 0),
       profit: Math.round(k.profit || 0),
+      revenue: Math.round(k.revenue || 0),
+      retention: clampPct(k.retention || 0),
       tokenPrice: Number(k.tokenPrice) || 0,
+      riskSecurity: clampPct(prod.risk?.security ?? 0),
+      riskCompliance: clampPct(prod.risk?.compliance ?? 0),
       cash: Math.round(state.resources?.cash || 0),
     });
     // keep last ~90 days
@@ -1670,25 +1896,29 @@ export function tickLiveProductsDaily(state) {
     const k = prod.kpi || {};
     const scores = prod.scores || {};
     const ops = prod.ops || {};
-    ensureProductFields(prod);
+    ensureProductFields(prod, state);
 
     // daily adoption update (approx weekly/7)
     const naturalW = clamp(0.015 + scores.productFit / 520 + scores.growth / 650 - prod.risk.security / 500, -0.03, 0.06);
     const incentiveBoostW = clamp((ops.incentivesBudgetWeekly || 0) / 120000, 0, 0.08);
+    const marketingBoostW = clamp((ops.marketingBudgetWeekly || 0) / 220000, 0, 0.10);
+    const supportBoostW = clamp((ops.supportBudgetWeekly || 0) / 180000, 0, 0.05);
     const emissionsBoostW = clamp((ops.emissions || 0) * 0.06, 0, 0.06);
     const crashPenaltyW = prod.risk.security >= 70 ? -0.05 : 0;
-    const growthRateW = naturalW + incentiveBoostW + emissionsBoostW + crashPenaltyW;
+    const growthRateW = naturalW + incentiveBoostW + marketingBoostW + emissionsBoostW + crashPenaltyW;
     const growthRateD = growthRateW / 7;
 
     k.users = Math.round(clamp((k.users || 0) * (1 + growthRateD), 0, 9_999_999));
-    const retentionW = clampPct((k.retention || 30) + (scores.productFit - 50) * 0.02 - incentiveBoostW * 20 - crashPenaltyW * 30);
+    const retentionW = clampPct((k.retention || 30) + (scores.productFit - 50) * 0.02 + supportBoostW * 22 - incentiveBoostW * 20 - crashPenaltyW * 30);
     // smooth retention daily
     k.retention = clampPct((k.retention || 30) * 0.8 + retentionW * 0.2);
     k.dau = Math.round(clamp(k.users * clamp(0.03 + k.retention / 300, 0.03, 0.25), 0, k.users));
 
     // DeFi metrics daily
     if (k.tvl != null && k.volume != null) {
-      const trust = clamp(0.5 + scores.security / 200 + scores.compliance / 260 - prod.risk.security / 220, 0.2, 1.25);
+      const secSpendBoost = clamp((ops.securityBudgetWeekly || 0) / 220000, 0, 0.10);
+      const compSpendBoost = clamp((ops.complianceBudgetWeekly || 0) / 220000, 0, 0.08);
+      const trust = clamp(0.5 + scores.security / 200 + scores.compliance / 260 + secSpendBoost + compSpendBoost - prod.risk.security / 220, 0.2, 1.28);
       const tvlRateW = clamp(growthRateW * 0.8 + (trust - 0.8) * 0.06, -0.08, 0.10);
       const tvlRateD = tvlRateW / 7;
       k.tvl = Math.round(clamp((k.tvl || 0) * (1 + tvlRateD), 0, 9_999_999_999));
@@ -1722,22 +1952,49 @@ export function tickLiveProductsDaily(state) {
     const baseRevenue = Math.round(dau * arpuBase * arpuMul * (isDefi ? 0.45 : 1.0));
 
     const revenue = Math.round(feeRevenue + baseRevenue);
+    k.revenueFee = feeRevenue;
+    k.revenueBase = baseRevenue;
 
     // Costs: tune down to make early-game less negative
     const infraCostW = Math.round((240 + (dau || 0) * 0.18 + (vol / 1_000_000) * 28) * infraCostMulGlobal);
     const secCostW = Math.round((160 + (100 - (scores.security || 50)) * 3.2) * secCostMulGlobal);
     const buybackW = Math.round(revenue * clamp(ops.buybackPct || 0, 0, 0.5));
     const incentivesW = Math.round(clamp(ops.incentivesBudgetWeekly || 0, 0, 999999999));
+    const marketingW = Math.round(clamp(ops.marketingBudgetWeekly || 0, 0, 999999999));
+    const securityW = Math.round(clamp(ops.securityBudgetWeekly || 0, 0, 999999999));
+    const infraW = Math.round(clamp(ops.infraBudgetWeekly || 0, 0, 999999999));
+    const complianceW = Math.round(clamp(ops.complianceBudgetWeekly || 0, 0, 999999999));
+    const supportW = Math.round(clamp(ops.supportBudgetWeekly || 0, 0, 999999999));
+    const referralPct = clamp(Number(ops.referralPct) || 0, 0, 0.3);
+    const referralW = Math.round(revenue * referralPct * 0.25);
 
-    const infraCost = Math.round(infraCostW / 7);
-    const secCost = Math.round(secCostW / 7);
+    // Optional “extra spend” can reduce certain costs (but you still pay the spend)
+    const infraCostMulSpend = clamp(1 - infraW / 350000 * 0.22, 0.78, 1.0);
+    const secCostMulSpend = clamp(1 - securityW / 350000 * 0.25, 0.75, 1.0);
+    const infraCost = Math.round((infraCostW * infraCostMulSpend) / 7);
+    const secCost = Math.round((secCostW * secCostMulSpend) / 7);
     const buyback = Math.round(buybackW / 7);
     const incentives = Math.round(incentivesW / 7);
+    const marketing = Math.round(marketingW / 7);
+    const security = Math.round(securityW / 7);
+    const compliance = Math.round(complianceW / 7);
+    const support = Math.round(supportW / 7);
+    const referral = Math.round(referralW / 7);
 
-    const profit = revenue - infraCost - secCost - incentives - buyback;
+    const profit = revenue - infraCost - secCost - incentives - buyback - marketing - security - compliance - support - referral;
     k.fees = fees;
     k.revenue = revenue;
     k.profit = profit;
+    k.costInfra = infraCost;
+    k.costSec = secCost;
+    k.costIncentives = incentives;
+    k.costBuyback = buyback;
+    k.costMarketing = marketing;
+    k.costSecurity = security;
+    k.costCompliance = compliance;
+    k.costSupport = support;
+    k.costReferral = referral;
+    k.marginPct = revenue > 0 ? Math.round(clamp((profit / revenue) * 100, -999, 999)) : 0;
     k.cumProfit = Math.round((Number(k.cumProfit) || 0) + profit);
     k.cumRevenue = Math.round((Number(k.cumRevenue) || 0) + revenue);
 
@@ -1746,8 +2003,10 @@ export function tickLiveProductsDaily(state) {
     state.progress.earnedTotal = Math.round((state.progress.earnedTotal || 0) + Math.max(0, profit));
 
     // risk drift daily (milder)
-    prod.risk.security = clampPct((prod.risk.security || 10) + (100 - scores.security) * 0.004 + ri(-1, 2) - (ops.incentivesBudgetWeekly > 0 ? 0.3 : 0));
-    prod.risk.compliance = clampPct((prod.risk.compliance || 10) + (100 - scores.compliance) * 0.004 + ri(-1, 2) + (ops.emissions > 0.3 ? 0.6 : 0));
+    const secSpendRiskCut = clamp((ops.securityBudgetWeekly || 0) / 260000, 0, 1.4) * 0.35;
+    const compSpendRiskCut = clamp((ops.complianceBudgetWeekly || 0) / 260000, 0, 1.2) * 0.30;
+    prod.risk.security = clampPct((prod.risk.security || 10) + (100 - scores.security) * 0.004 + ri(-1, 2) - (ops.incentivesBudgetWeekly > 0 ? 0.3 : 0) - secSpendRiskCut);
+    prod.risk.compliance = clampPct((prod.risk.compliance || 10) + (100 - scores.compliance) * 0.004 + ri(-1, 2) + (ops.emissions > 0.3 ? 0.6 : 0) - compSpendRiskCut);
 
     // token price (daily) - responds to ops params + fundamentals
     const token0 = typeof k.tokenPrice === "number" ? k.tokenPrice : 1;

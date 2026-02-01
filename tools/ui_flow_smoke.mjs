@@ -42,7 +42,30 @@ async function run() {
   await page.click('[data-ui="createProject"]');
   await page.waitForFunction(() => !document.getElementById("modal")?.classList.contains("is-hidden"), null, { timeout: 5_000 });
   await page.click('text=立项并开始');
-  await page.waitForFunction(() => document.getElementById("modal")?.classList.contains("is-hidden"), null, { timeout: 5_000 });
+  // 立项后可能会立即弹出“阶段配置”门控弹窗；这里不强依赖 modal 必须隐藏
+  await page.waitForTimeout(150);
+  await closeAnyModal();
+
+  // While time is running (frequent rerenders), buttons should still be clickable.
+  // This guards against lost clicks between pointerdown and click due to rerender.
+  await page.evaluate(() => {
+    const s = globalThis.__w3dt?.getState?.();
+    if (!s?.time) return false;
+    s.time.speed = 8;
+    s.time.paused = false;
+    return true;
+  });
+  await page.waitForTimeout(600);
+
+  // Stage config button in dashboard should open modal even when time is running
+  await page.click("[data-stage]");
+  await page.waitForFunction(() => !document.getElementById("modal")?.classList.contains("is-hidden"), null, { timeout: 5_000 });
+  await closeAnyModal();
+
+  // Create project button should open modal even when time is running
+  await page.click('[data-ui="createProject"]');
+  await page.waitForFunction(() => !document.getElementById("modal")?.classList.contains("is-hidden"), null, { timeout: 5_000 });
+  await closeAnyModal();
 
   // Ensure we have a project selected
   const prjId = await page.evaluate(() => {
